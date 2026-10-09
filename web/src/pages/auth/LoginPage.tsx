@@ -109,9 +109,12 @@ export function LoginPage() {
         </Button>
       </form>
 
-      <p className="mt-6 text-center text-xs text-text-secondary">
-        Демо-доступ: demo@example.com / demo-password
-      </p>
+      {/* Seeded demo logins are for a developer's machine, never a production build. */}
+      {import.meta.env.DEV ? (
+        <p className="mt-6 text-center text-xs text-text-secondary">
+          Демо-доступ: demo@example.com / demo-password
+        </p>
+      ) : null}
       <p className="mt-3 text-center text-xs text-text-secondary">
         Нет аккаунта?{" "}
         <Link to="/register" className="text-text-link hover:text-text-link-hover">

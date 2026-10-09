@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.config.checks import check_config
 from app.config.settings import settings
 from app.db.migrate import run_migrations
 from app.db.pool import close_pool, init_pool
@@ -24,6 +26,7 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+    check_config(settings)
     log.info("startup", env=settings.app_env, port=settings.app_port)
 
     pool = await init_pool()
@@ -71,7 +74,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The bot is a notification channel, not a booking dependency: it runs only
     # when a token exists, and its failure never stops the app.
     bot_task = None
-    if settings.telegram_bot_token:
+    if settings.telegram_bot_token and importlib.util.find_spec("aiogram") is None:
+        log.error("telegram-bot-skipped", reason="aiogram is not installed (uv sync --extra bot)")
+    elif settings.telegram_bot_token:
         bot_task = asyncio.create_task(bot_loop(settings.telegram_bot_token))
     else:
         log.warning("telegram-bot-skipped", reason="TELEGRAM_BOT_TOKEN is not set")

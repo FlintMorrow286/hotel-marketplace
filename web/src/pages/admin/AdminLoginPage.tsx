@@ -98,9 +98,12 @@ export function AdminLoginPage() {
         </Button>
       </form>
 
-      <p className="mt-6 text-center text-xs text-text-secondary">
-        Демо-доступ: admin@example.com / admin-password
-      </p>
+      {/* Seeded demo logins are for a developer's machine, never a production build. */}
+      {import.meta.env.DEV ? (
+        <p className="mt-6 text-center text-xs text-text-secondary">
+          Демо-доступ: admin@example.com / admin-password
+        </p>
+      ) : null}
     </PageShell>
   );
 }

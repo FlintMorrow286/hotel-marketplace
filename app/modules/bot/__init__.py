@@ -15,12 +15,17 @@ the bot is a notification sink that does not need webhook's latency.
 
 from __future__ import annotations
 
-from aiogram import Bot, Dispatcher
-from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from typing import TYPE_CHECKING
 
 from app.db.pool import get_pool
 from app.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    # aiogram is the optional `bot` extra and the bot runs only when a token is
+    # set, so importing this module must not need it.
+    from aiogram import Dispatcher
+    from aiogram.filters import CommandObject
+    from aiogram.types import Message
 
 log = get_logger(__name__)
 
@@ -136,6 +141,9 @@ async def _handle_unlink(message: Message) -> None:
 
 def build_dispatcher() -> Dispatcher:
     """Wire the handlers once; the polling loop reuses this."""
+    from aiogram import Dispatcher
+    from aiogram.filters import Command
+
     dp = Dispatcher()
     dp.message.register(_handle_start, Command("start"))
     dp.message.register(_handle_help, Command("help"))
@@ -150,6 +158,8 @@ async def bot_loop(token: str) -> None:
     a failure here is logged, not raised — the booking flow does not depend on
     the bot, only on notifications being best-effort.
     """
+    from aiogram import Bot
+
     bot = Bot(token=token)
     dp = build_dispatcher()
     log.info("bot-started")

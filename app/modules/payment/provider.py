@@ -79,12 +79,14 @@ class FailProvider(PaymentProvider):
 
 
 def get_payment_provider() -> PaymentProvider:
-    """Pick the provider from PAYMENT_MODE. Unknown modes fall back to stub."""
+    """Pick the provider from PAYMENT_MODE.
+
+    A mode with no implementation (tinkoff, a typo) raises: falling back to the
+    stub would confirm bookings without charging anyone.
+    """
     mode = settings.payment_mode
     if mode == PaymentMode.FAIL:
         return FailProvider()
     if mode in {PaymentMode.STUB, PaymentMode.DELAYED_STUB}:
         return StubProvider()
-    # tinkoff / others land here until implemented
-    log.warning("payment-mode-not-implemented-fallback", mode=mode, fallback="stub")
-    return StubProvider()
+    raise ValueError(f"PAYMENT_MODE={mode!r} has no implementation yet")
