@@ -36,6 +36,14 @@ const MESSAGES: ReadonlyArray<[RegExp, string]> = [
   ],
 ];
 
+/** Logins, registration and booking lookups answer 429 once guessed at too often. */
+export const TOO_MANY_ATTEMPTS =
+  "Слишком много попыток. Подождите минуту и попробуйте снова.";
+
+export function isTooManyAttempts(exc: unknown): boolean {
+  return exc instanceof ApiException && exc.status === 429;
+}
+
 export function humanError(exc: unknown, fallback: string): string {
   if (!(exc instanceof ApiException)) return fallback;
   const match = MESSAGES.find(([pattern]) => pattern.test(exc.message));

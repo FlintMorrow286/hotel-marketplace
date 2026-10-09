@@ -37,6 +37,7 @@ from collections.abc import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
+import pytest
 import pytest_asyncio
 
 from app.config.settings import settings
@@ -45,6 +46,22 @@ from app.config.settings import settings
 # DATABASE_URL: the `_test` sibling unless PYTEST_DISABLE_TEST_DB=1 says the
 # caller already pointed the suite at a throwaway database.
 TEST_DSN = settings.test_dsn
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _relaxed_public_rate_limits():
+    """The suite logs in and looks bookings up from one client address.
+
+    Only tests/test_public_ratelimit.py tightens these, with an address of its own.
+    """
+    names = ("login_limit_per_min", "register_limit_per_min", "lookup_limit_per_min")
+    saved = {name: getattr(settings, name) for name in names}
+    for name in names:
+        setattr(settings, name, 100_000)
+    yield
+    for name, value in saved.items():
+        setattr(settings, name, value)
+
 
 _CLEANUP = (
     "DELETE FROM outbox_shed_counter; DELETE FROM webhook_delivery; "

@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     # The window both buckets live in. Separate from the numbers so a test does
     # not have to sleep a whole minute.
     rate_limit_window_sec: int = Field(default=60)
+
+    # ----- Public endpoints that take guesses -----
+    # Attempts per client address per window; one account or booking code gets
+    # 3x that across all addresses (app/utils/ratelimit_http.py). Raise them if
+    # many users legitimately share an address.
+    login_limit_per_min: int = Field(default=10)
+    register_limit_per_min: int = Field(default=5)
+    lookup_limit_per_min: int = Field(default=10)
     # Per webhook subscription: the worker never pushes a partner's hook faster
     # than this, so our queue spike cannot drown their server.
     webhook_rate_per_sec: int = Field(default=10)

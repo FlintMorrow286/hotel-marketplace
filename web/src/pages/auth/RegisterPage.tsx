@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { PageShell } from "@/components/PageShell";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { isTooManyAttempts, TOO_MANY_ATTEMPTS } from "@/utils/errors";
 
 /**
  * Partner self-registration. On success the token lands in localStorage and
@@ -39,6 +40,8 @@ export function RegisterPage() {
     onError: (exc) => {
       if (exc instanceof ApiException && exc.status === 409) {
         setError("Партнёр с таким email уже существует. Войдите вместо регистрации.");
+      } else if (isTooManyAttempts(exc)) {
+        setError(TOO_MANY_ATTEMPTS);
       } else {
         setError("Не удалось зарегистрироваться. Попробуйте ещё раз.");
       }

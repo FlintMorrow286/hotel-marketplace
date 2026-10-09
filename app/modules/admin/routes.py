@@ -3,8 +3,9 @@ from __future__ import annotations
 import datetime as dt
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.config.settings import settings
 from app.db.pool import get_pool
 from app.modules.admin import report, service
 from app.modules.admin.schemas import (
@@ -14,13 +15,21 @@ from app.modules.admin.schemas import (
 )
 from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
+from app.utils.ratelimit_http import SUBJECT_FACTOR, enforce
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 
 @router.post("/login")
-async def admin_login(data: AdminLoginRequest) -> dict:
+async def admin_login(data: AdminLoginRequest, request: Request) -> dict:
     """Staff login. Issues an admin-scoped token (not a partner token)."""
+    await enforce(request, "admin-login", settings.login_limit_per_min)
+    await enforce(
+        request,
+        "admin-login-account",
+        settings.login_limit_per_min * SUBJECT_FACTOR,
+        subject=data.email,
+    )
     conn = await get_pool().acquire()
     try:
         token = await service.login_admin(conn, data.email, data.password)

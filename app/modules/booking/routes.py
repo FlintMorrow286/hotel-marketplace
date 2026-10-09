@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
+from app.config.settings import settings
 from app.db.pool import get_pool
 from app.db.tx import serializable
 from app.modules.auth.deps import require_scope
@@ -15,6 +16,7 @@ from app.modules.booking.schemas import (
     PartnerBookingLineOut,
     PartnerBookingOut,
 )
+from app.utils.ratelimit_http import SUBJECT_FACTOR, enforce
 
 router = APIRouter(prefix="/v1/bookings", tags=["booking"])
 
@@ -131,7 +133,7 @@ async def create_hold(
 
 
 @router.post("/lookup")
-async def lookup_booking(data: BookingLookup) -> dict:
+async def lookup_booking(data: BookingLookup, request: Request) -> dict:
     """Guest-facing lookup: the BK-XXXXXX code plus the email the booking was made with.
 
     The code is only ~30 bits and is printed in emails, so on its own it must
@@ -139,7 +141,16 @@ async def lookup_booking(data: BookingLookup) -> dict:
     cancels or refunds the booking, so the guest has to prove the second
     factor too. A wrong email and an unknown code both answer 404. The reply
     carries only public stay details: no guest contacts, no payment state.
+
+    Throttled per client address and per code, so guessing stays impractical.
     """
+    await enforce(request, "lookup", settings.lookup_limit_per_min)
+    await enforce(
+        request,
+        "lookup-code",
+        settings.lookup_limit_per_min * SUBJECT_FACTOR,
+        subject=data.code,
+    )
     conn = await get_pool().acquire()
     try:
         row = await conn.fetchrow(

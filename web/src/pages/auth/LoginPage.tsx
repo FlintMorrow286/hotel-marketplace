@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { PageShell } from "@/components/PageShell";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { isTooManyAttempts, TOO_MANY_ATTEMPTS } from "@/utils/errors";
 
 /**
  * Partner login. On success the token lands in localStorage and the query
@@ -41,7 +42,12 @@ export function LoginPage() {
       queryClient.clear();
       navigate(from, { replace: true });
     },
-    onError: () => setError("Неверный email или пароль. Попробуйте ещё раз."),
+    onError: (exc) =>
+      setError(
+        isTooManyAttempts(exc)
+          ? TOO_MANY_ATTEMPTS
+          : "Неверный email или пароль. Попробуйте ещё раз.",
+      ),
   });
 
   // Already signed in - no point showing the form.

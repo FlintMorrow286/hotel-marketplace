@@ -6,6 +6,7 @@ import { bookings } from "@/api/client";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { isTooManyAttempts, TOO_MANY_ATTEMPTS } from "@/utils/errors";
 
 const STATUS_LABEL: Record<string, string> = {
   hold: "Ожидает оплаты",
@@ -85,7 +86,9 @@ export function MyBookingPage() {
       </form>
       {lookup.isError ? (
         <p role="alert" className="mt-3 text-sm text-feedback-error-text">
-          Бронь не найдена. Проверьте код и email, указанный при бронировании.
+          {isTooManyAttempts(lookup.error)
+            ? TOO_MANY_ATTEMPTS
+            : "Бронь не найдена. Проверьте код и email, указанный при бронировании."}
         </p>
       ) : null}
 
