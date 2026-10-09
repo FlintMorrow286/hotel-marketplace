@@ -15,6 +15,10 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 /** Party sizes the catalog supports; a larger party narrows itself out. */
 const GUEST_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
 
+/** The API refuses search text longer than this (422); the box stops at it too,
+ * so pasting a paragraph cannot turn into an error banner. */
+const SEARCH_MAX_LENGTH = 100;
+
 /** Today as `YYYY-MM-DD` in the browser's zone — the `min` of a date input.
  *
  * `toISOString()` would answer UTC, which is a day off for a guest browsing
@@ -87,6 +91,7 @@ export function SearchPage() {
         <input
           id="search-query"
           type="search"
+          maxLength={SEARCH_MAX_LENGTH}
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
