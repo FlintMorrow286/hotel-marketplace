@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 
 import { bookings, availability } from "@/api/client";
 import { humanError } from "@/utils/errors";
+import { addDays } from "@/utils/date";
 import { plural } from "@/utils/plural";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -45,7 +46,7 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
   const total = days ? days.reduce((s, d) => s + (d.price ?? 0), 0) : 0;
   const blocked = days?.some((d) => d.free <= 0 || d.closed) ?? false;
   const guestComplete = Boolean(guest.name && guest.email && guest.phone);
-  const canBook = Boolean(checkin && checkout) && !blocked && guestComplete;
+  const canBook = Boolean(checkin && checkout > checkin && days?.length) && !blocked && guestComplete;
 
   function onCheck() {
     if (!checkin || !checkout) return;
@@ -61,15 +62,27 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
           label="Заезд"
           type="date"
           value={checkin}
-          onChange={(e) => setCheckin(e.target.value)}
+          onChange={(e) => {
+            const nextCheckin = e.target.value;
+            setCheckin(nextCheckin);
+            if (checkout && checkout <= nextCheckin) {
+              setCheckout(addDays(nextCheckin, 1));
+            }
+            setDays(null);
+            price.reset();
+          }}
           min={today()}
         />
         <Input
           label="Выезд"
           type="date"
           value={checkout}
-          onChange={(e) => setCheckout(e.target.value)}
-          min={checkin || today()}
+          onChange={(e) => {
+            setCheckout(e.target.value);
+            setDays(null);
+            price.reset();
+          }}
+          min={checkin ? addDays(checkin, 1) : today()}
         />
       </div>
 

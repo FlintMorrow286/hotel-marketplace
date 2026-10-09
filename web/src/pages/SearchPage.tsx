@@ -5,6 +5,7 @@ import { useState } from "react";
 import { catalog } from "@/api/client";
 import { AMENITY_CATALOG, propertyTypeLabel } from "@/api/types";
 import { formatPriceFrom } from "@/utils/format";
+import { addDays } from "@/utils/date";
 import { cn } from "@/utils/cn";
 import { Button } from "@/components/ui/Button";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
@@ -107,7 +108,11 @@ export function SearchPage() {
           value={dateFrom}
           min={todayIso()}
           onChange={(e) => {
-            setDateFrom(e.target.value);
+            const nextDateFrom = e.target.value;
+            setDateFrom(nextDateFrom);
+            if (dateTo && dateTo <= nextDateFrom) {
+              setDateTo(addDays(nextDateFrom, 1));
+            }
             resetPage();
           }}
           className="h-11 shrink-0 bg-transparent text-base text-text-primary focus:outline-none"
@@ -128,7 +133,7 @@ export function SearchPage() {
           id="search-date-to"
           type="date"
           value={dateTo}
-          min={dateFrom || todayIso()}
+          min={dateFrom ? addDays(dateFrom, 1) : todayIso()}
           onChange={(e) => {
             setDateTo(e.target.value);
             resetPage();
