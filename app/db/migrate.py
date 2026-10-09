@@ -3,6 +3,10 @@
 Migrations are plain `.sql` files in `migrations/`, applied in filename order.
 Applied migrations are tracked in the `schema_migrations` table.
 
+Runners are serialised by a session-level advisory lock, so several instances
+starting together are safe: one applies, the others wait and find nothing pending.
+`--check` never takes the lock and never writes.
+
 Usage:
     python -m app.db.migrate            # apply all pending
     python -m app.db.migrate --check    # exit 1 if pending (for CI)
@@ -48,6 +52,22 @@ async def _ensure_tracking_table(conn) -> None:
     )
 
 
+async def _applied_versions(conn) -> set[int]:
+    rows = await conn.fetch("SELECT version FROM schema_migrations")
+    return {r["version"] for r in rows}
+
+
+async def _take_lock(conn) -> None:
+    """Hold the migration lock until `conn` closes; say so when another runner has it."""
+    if await conn.fetchval("SELECT pg_try_advisory_lock(hashtextextended('app.db.migrate', 0))"):
+        return
+    # Without this line a waiting instance looks hung: it logs nothing between
+    # `redis-ready` and the end of the other runner's migrations.
+    log.info("migration-lock-waiting", reason="another runner is applying migrations")
+    await conn.execute("SELECT pg_advisory_lock(hashtextextended('app.db.migrate', 0))")
+    log.info("migration-lock-acquired")
+
+
 async def run_migrations(check_only: bool = False, dsn: str | None = None) -> list[int]:
     """Apply all pending migrations. Returns list of applied version numbers.
 
@@ -61,15 +81,20 @@ async def run_migrations(check_only: bool = False, dsn: str | None = None) -> li
 
     conn = await asyncpg.connect(dsn=dsn or settings.database_url)
     try:
-        if not check_only:
+        if check_only:
+            # A check only reads. On a database that was never migrated it must not
+            # create the tracking table either: that DDL races with the runner that
+            # holds the lock below, and one of the two fails on the table's type name.
+            exists = await conn.fetchval("SELECT to_regclass('schema_migrations') IS NOT NULL")
+            done = await _applied_versions(conn) if exists else set()
+        else:
             # The app runs migrations on every start, so two instances coming up
             # together (a rolling deploy) would apply the same file twice. The
             # session-level lock is held until this connection closes: the second
-            # runner waits, then finds nothing pending. A check only reads.
-            await conn.execute("SELECT pg_advisory_lock(hashtextextended('app.db.migrate', 0))")
-        await _ensure_tracking_table(conn)
-        rows = await conn.fetch("SELECT version FROM schema_migrations")
-        done = {r["version"] for r in rows}
+            # runner waits, then finds nothing pending.
+            await _take_lock(conn)
+            await _ensure_tracking_table(conn)
+            done = await _applied_versions(conn)
 
         pending = [(n, p) for n, p in migrations if n not in done]
 
