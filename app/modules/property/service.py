@@ -170,6 +170,11 @@ async def get_public_property(conn: asyncpg.Connection, property_id: str) -> dic
     )
 
 
+def _like_escape(text: str) -> str:
+    """Make `%`, `_` and `\\` in a guest's search text match themselves, not act as wildcards."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 async def list_public_properties(
     conn: asyncpg.Connection,
     city: str | None = None,
@@ -209,7 +214,7 @@ async def list_public_properties(
             f" WHERE ut.property_id = p.id AND ut.capacity >= ${len(args)})"
         )
     if q:
-        args.append(f"%{q}%")
+        args.append(f"%{_like_escape(q)}%")
         where += f" AND (p.name ILIKE ${len(args)} OR p.city ILIKE ${len(args)})"
     if date_from and date_to and date_to > date_from:
         # Half-open [date_from, date_to), same as the availability read: the

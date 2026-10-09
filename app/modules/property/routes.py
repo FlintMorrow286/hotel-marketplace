@@ -86,8 +86,8 @@ class PropertyPage(BaseModel):
 @router.get("/properties", response_model=PropertyPage)
 async def list_public_properties(
     city: str | None = None,
-    guests: int | None = None,
-    q: str | None = None,
+    guests: Annotated[int | None, Query(ge=1)] = None,
+    q: Annotated[str | None, Query(max_length=100)] = None,
     date_from: dt.date | None = Query(default=None),
     date_to: dt.date | None = Query(default=None),
     amenities: list[str] | None = Query(default=None),

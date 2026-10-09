@@ -13,6 +13,9 @@ from app.modules.inventory import service
 
 router = APIRouter(prefix="/v1", tags=["inventory"])
 
+# The public read answers one row per night; a guest looks at weeks, not years.
+MAX_AVAILABILITY_DAYS = 366
+
 
 class CloseRangeRequest(BaseModel):
     unit_type_id: str
@@ -84,6 +87,11 @@ async def availability(
     date_to: dt.date = Query(...),
 ) -> dict:
     """Public: per-night availability over the half-open interval [from, to)."""
+    if (date_to - date_from).days > MAX_AVAILABILITY_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"range is limited to {MAX_AVAILABILITY_DAYS} days",
+        )
     conn = await get_pool().acquire()
     try:
         try:
