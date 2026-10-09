@@ -6,6 +6,7 @@ import { catalog } from "@/api/client";
 import { AMENITY_CATALOG, propertyTypeLabel } from "@/api/types";
 import { formatPriceFrom } from "@/utils/format";
 import { addDays } from "@/utils/date";
+import { plural } from "@/utils/plural";
 import { cn } from "@/utils/cn";
 import { Button } from "@/components/ui/Button";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
@@ -76,8 +77,10 @@ export function SearchPage() {
         Поиск жилья
       </h1>
 
-      {/* One search pill on the page color — no boxed form chrome. */}
-      <div className="mt-10 flex items-center gap-3 rounded-button border border-border-strong bg-surface-card p-2 pl-5">
+      {/* One search pill on the page color — no boxed form chrome. Below lg the
+       * fields wrap (query on its own row, each label stays with its field)
+       * instead of running off the screen; lg keeps the single pill row. */}
+      <div className="mt-10 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border-strong bg-surface-card p-3 lg:flex-nowrap lg:rounded-button lg:p-2 lg:pl-5">
         <label htmlFor="search-query" className="sr-only">
           Поиск жилья
         </label>
@@ -90,80 +93,86 @@ export function SearchPage() {
             resetPage();
           }}
           placeholder="Город, название…"
-          className="h-11 w-full bg-transparent text-base text-text-primary placeholder:text-text-tertiary focus:outline-none"
+          className="h-11 w-full min-w-0 bg-transparent text-base text-text-primary placeholder:text-text-tertiary focus:outline-none"
         />
         <span
           aria-hidden="true"
-          className="h-8 w-px shrink-0 bg-border-strong"
+          className="hidden h-8 w-px shrink-0 bg-border-strong lg:block"
         />
-        <label
-          htmlFor="search-date-from"
-          className="shrink-0 text-sm text-text-tertiary"
-        >
-          Заезд
-        </label>
-        <input
-          id="search-date-from"
-          type="date"
-          value={dateFrom}
-          min={todayIso()}
-          onChange={(e) => {
-            const nextDateFrom = e.target.value;
-            setDateFrom(nextDateFrom);
-            if (dateTo && dateTo <= nextDateFrom) {
-              setDateTo(addDays(nextDateFrom, 1));
-            }
-            resetPage();
-          }}
-          className="h-11 shrink-0 bg-transparent text-base text-text-primary focus:outline-none"
-        />
+        <div className="flex shrink-0 items-center gap-3">
+          <label
+            htmlFor="search-date-from"
+            className="text-sm text-text-tertiary"
+          >
+            Заезд
+          </label>
+          <input
+            id="search-date-from"
+            type="date"
+            value={dateFrom}
+            min={todayIso()}
+            onChange={(e) => {
+              const nextDateFrom = e.target.value;
+              setDateFrom(nextDateFrom);
+              if (dateTo && dateTo <= nextDateFrom) {
+                setDateTo(addDays(nextDateFrom, 1));
+              }
+              resetPage();
+            }}
+            className="h-11 bg-transparent text-base text-text-primary focus:outline-none"
+          />
+        </div>
         <span
           aria-hidden="true"
-          className="shrink-0 text-sm text-text-tertiary"
+          className="hidden shrink-0 text-sm text-text-tertiary sm:inline"
         >
           →
         </span>
-        <label
-          htmlFor="search-date-to"
-          className="shrink-0 text-sm text-text-tertiary"
-        >
-          Выезд
-        </label>
-        <input
-          id="search-date-to"
-          type="date"
-          value={dateTo}
-          min={dateFrom ? addDays(dateFrom, 1) : todayIso()}
-          onChange={(e) => {
-            setDateTo(e.target.value);
-            resetPage();
-          }}
-          className="h-11 shrink-0 bg-transparent text-base text-text-primary focus:outline-none"
-        />
-        <label
-          htmlFor="search-guests"
-          className="shrink-0 text-sm text-text-tertiary"
-        >
-          Гостей
-        </label>
-        <select
-          id="search-guests"
-          value={guests}
-          onChange={(e) => {
-            setGuests(Number(e.target.value));
-            resetPage();
-          }}
-          className="h-11 shrink-0 appearance-none bg-transparent pr-2 text-base text-text-primary focus:outline-none"
-        >
-          <option value={0}>Любое</option>
-          {GUEST_OPTIONS.map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
+        <div className="flex shrink-0 items-center gap-3">
+          <label
+            htmlFor="search-date-to"
+            className="text-sm text-text-tertiary"
+          >
+            Выезд
+          </label>
+          <input
+            id="search-date-to"
+            type="date"
+            value={dateTo}
+            min={dateFrom ? addDays(dateFrom, 1) : todayIso()}
+            onChange={(e) => {
+              setDateTo(e.target.value);
+              resetPage();
+            }}
+            className="h-11 bg-transparent text-base text-text-primary focus:outline-none"
+          />
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <label
+            htmlFor="search-guests"
+            className="text-sm text-text-tertiary"
+          >
+            Гостей
+          </label>
+          <select
+            id="search-guests"
+            value={guests}
+            onChange={(e) => {
+              setGuests(Number(e.target.value));
+              resetPage();
+            }}
+            className="h-11 appearance-none bg-transparent pr-2 text-base text-text-primary focus:outline-none"
+          >
+            <option value={0}>Любое</option>
+            {GUEST_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </div>
         <span className="shrink-0 text-sm text-text-tertiary">
-          {total} объектов
+          {total} {plural(total, "объект", "объекта", "объектов")}
         </span>
       </div>
 
