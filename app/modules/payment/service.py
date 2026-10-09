@@ -16,6 +16,7 @@ import asyncpg
 
 from app.config import legal
 from app.db.pool import get_pool
+from app.db.tx import serializable, try_lock, unlock
 from app.modules.booking.service import BookingError
 from app.modules.payment.provider import PaymentResult, get_payment_provider
 from app.utils.logger import get_logger
@@ -57,7 +58,14 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
     if conn is None:
         pool = get_pool()
         conn = await pool.acquire()
+    lock_held = False
     try:
+        # One payment per booking at a time: a double click or a client retry
+        # must not reach the provider twice, or the guest is charged twice.
+        lock_held = await try_lock(conn, "pay", booking_id)
+        if not lock_held:
+            raise PaymentError("a payment for this booking is already in progress")
+
         # --- read current state (no lock yet: provider call may take time)
         booking = await conn.fetchrow(
             """
@@ -87,8 +95,8 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
             )
             raise PaymentError("payment failed")
 
-        # --- confirm transactionally
-        async with conn.transaction(isolation="serializable"):
+        # --- confirm transactionally (re-run if Postgres aborts it for a conflict)
+        async def _confirm() -> tuple[dict, asyncpg.Record]:
             locked = await conn.fetch(
                 """
                 SELECT date, hold, sold FROM inventory_day
@@ -140,8 +148,6 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
                 "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",
                 booking_id,
             )
-            log.info("booking-confirmed", booking_id=booking_id, code=row["code"])
-
             # Tell the channels. Same transaction as the confirmation, so the
             # outbox row can never exist without the booking it describes.
             from app.modules.outbox import service as outbox_service
@@ -163,25 +169,33 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
                 property_id=row["property_id"],
             )
 
-            from app.modules.notification import service as notification_service
+            return await _row_to_out(row, lines), row
 
-            try:
-                partner_id = await conn.fetchval(
-                    "SELECT partner_id::text FROM property WHERE id = $1", row["property_id"]
-                )
-                guest = await conn.fetchrow(
-                    "SELECT guest_name, guest_email FROM booking WHERE id = $1", booking_id
-                )
-                payload = dict(row)
-                payload["partner_id"] = partner_id
-                payload["guest_name"] = guest["guest_name"]
-                payload["guest_email"] = guest["guest_email"]
-                await notification_service.notify_booking_confirmed(conn, payload)
-            except Exception as exc:
-                log.warning("notify-failed", booking_id=booking_id, error=str(exc))
+        out, row = await serializable(conn, _confirm)
+        log.info("booking-confirmed", booking_id=booking_id, code=row["code"])
 
-            return await _row_to_out(row, lines)
+        # After the commit: a confirmation that rolls back or re-runs must not notify.
+        from app.modules.notification import service as notification_service
+
+        try:
+            partner_id = await conn.fetchval(
+                "SELECT partner_id::text FROM property WHERE id = $1", row["property_id"]
+            )
+            guest = await conn.fetchrow(
+                "SELECT guest_name, guest_email FROM booking WHERE id = $1", booking_id
+            )
+            payload = dict(row)
+            payload["partner_id"] = partner_id
+            payload["guest_name"] = guest["guest_name"]
+            payload["guest_email"] = guest["guest_email"]
+            await notification_service.notify_booking_confirmed(conn, payload)
+        except Exception as exc:
+            log.warning("notify-failed", booking_id=booking_id, error=str(exc))
+
+        return out
     finally:
+        if lock_held:
+            await unlock(conn, "pay", booking_id)
         if pool is not None:
             await pool.release(conn)
 
@@ -203,7 +217,13 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
     if conn is None:
         pool = get_pool()
         conn = await pool.acquire()
+    lock_held = False
     try:
+        # One refund per booking at a time: the provider call is not repeatable.
+        lock_held = await try_lock(conn, "refund", booking_id)
+        if not lock_held:
+            raise PaymentError("a refund for this booking is already in progress")
+
         booking = await conn.fetchrow(
             """
             SELECT id::text, code, status, total_amount::float8, checkin_date, checkout_date,
@@ -233,7 +253,7 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
         if result.status != "refunded":
             raise PaymentError("refund failed")
 
-        async with conn.transaction(isolation="serializable"):
+        async def _refund() -> dict:
             locked = await conn.fetch(
                 """
                 SELECT date, sold FROM inventory_day
@@ -257,13 +277,14 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
                 """
                 UPDATE booking
                 SET status = 'refunded', cancelled_at = now(), commission_status = 'void'
-                WHERE id = $1
+                WHERE id = $1 AND status IN ('confirmed', 'paid')
                 RETURNING id::text, code, status, total_amount::float8,
                           paid_at, checkin_date, checkout_date
                 """,
                 booking_id,
             )
-            assert row is not None
+            if row is None:
+                raise PaymentError("booking changed state during refund")
 
             from app.modules.outbox import service as outbox_service
 
@@ -290,19 +311,24 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
                 "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",
                 booking_id,
             )
-            log.info(
-                "booking-refunded",
-                booking_id=booking_id,
-                code=row["code"],
-                free_cancelled=is_free,
-                deadline=deadline.isoformat(),
-                refunded_amount=amount,
-            )
             out = await _row_to_out(row, lines)
             out["free_cancelled"] = is_free
             out["refunded_amount"] = amount
             return out
+
+        out = await serializable(conn, _refund)
+        log.info(
+            "booking-refunded",
+            booking_id=booking_id,
+            code=out["code"],
+            free_cancelled=is_free,
+            deadline=deadline.isoformat(),
+            refunded_amount=amount,
+        )
+        return out
     finally:
+        if lock_held:
+            await unlock(conn, "refund", booking_id)
         if pool is not None:
             await pool.release(conn)
 

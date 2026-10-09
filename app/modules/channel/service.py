@@ -14,6 +14,7 @@ import secrets
 
 import asyncpg
 
+from app.db.tx import serializable
 from app.utils.logger import get_logger
 from app.utils.secrets import hash_secret, needs_rehash, verify_secret
 
@@ -359,8 +360,9 @@ async def create_channel_booking(
     idem = idempotency_namespace(partner_id, client_key)
 
     # 1. Hold with the same row locks a guest hold takes.
-    async with conn.transaction(isolation="serializable"):
-        hold = await booking_service.create_hold(
+    hold = await serializable(
+        conn,
+        lambda: booking_service.create_hold(
             conn,
             unit_type_id=unit_type_id,
             checkin=checkin,
@@ -370,7 +372,8 @@ async def create_channel_booking(
             guest_phone=guest_phone,
             idempotency_key=idem,
             origin="channel",
-        )
+        ),
+    )
 
     # A replay of an already-confirmed booking is a success, not an error:
     # the channel retried after we already confirmed.
@@ -409,8 +412,7 @@ async def cancel_channel_booking(
     if status_now == "confirmed":
         return await payment_service.refund_booking(booking_id, conn=conn)
     if status_now == "hold":
-        async with conn.transaction(isolation="serializable"):
-            await booking_service.release_hold(conn, booking_id)
+        await serializable(conn, lambda: booking_service.release_hold(conn, booking_id))
         return {"id": booking_id, "status": "cancelled"}
     raise NotAvailable(f"cannot cancel booking with status={status_now}")
 

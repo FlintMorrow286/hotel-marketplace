@@ -141,6 +141,11 @@ def create_app() -> FastAPI:
 
     install_uuid_handler(app)
 
+    # A SERIALIZABLE conflict that outlasts the retries is "try again", not a fault.
+    from app.db.tx import install_conflict_handler
+
+    install_conflict_handler(app)
+
     # ---- single-app: serve the built frontend from one origin -------------
     # Static assets first (exact paths), then the SPA fallback so any deep
     # link (/search, /property/abc) lands on index.html for React Router.
