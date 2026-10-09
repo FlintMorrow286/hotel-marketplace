@@ -49,7 +49,8 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       # The webhook seal key has to exist for subscription creation to succeed;
       # CI owns no real secrets, so a generated one is fine.
-      WEBHOOK_SEAL_KEY: ${{ secrets.WEBHOOK_SEAL_KEY || 'ci-only-seal-key-not-a-real-secret' }}
+      # Valid Fernet-format test key; CI must not use a production key.
+      WEBHOOK_SEAL_KEY: ${{ secrets.WEBHOOK_SEAL_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }}
 
     steps:
       - uses: actions/checkout@v4
