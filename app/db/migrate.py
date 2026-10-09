@@ -61,6 +61,12 @@ async def run_migrations(check_only: bool = False, dsn: str | None = None) -> li
 
     conn = await asyncpg.connect(dsn=dsn or settings.database_url)
     try:
+        if not check_only:
+            # The app runs migrations on every start, so two instances coming up
+            # together (a rolling deploy) would apply the same file twice. The
+            # session-level lock is held until this connection closes: the second
+            # runner waits, then finds nothing pending. A check only reads.
+            await conn.execute("SELECT pg_advisory_lock(hashtextextended('app.db.migrate', 0))")
         await _ensure_tracking_table(conn)
         rows = await conn.fetch("SELECT version FROM schema_migrations")
         done = {r["version"] for r in rows}
