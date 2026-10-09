@@ -23,6 +23,13 @@ class HoldRequest(BaseModel):
     guest: GuestInfo
 
 
+class BookingLookup(BaseModel):
+    """What a guest types to find a booking: the code and the booking's email."""
+
+    code: str = Field(min_length=3, max_length=32)
+    email: EmailStr
+
+
 class BookingLineOut(BaseModel):
     date: dt.date
     price: float

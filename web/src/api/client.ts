@@ -239,9 +239,13 @@ export const bookings = {
     }),
   get: (id: string, signal?: AbortSignal) =>
     request<BookingOut>(`/bookings/${id}`, { signal }),
-  byCode: (code: string, signal?: AbortSignal) =>
-    request<BookingOut>(`/bookings/by-code/${encodeURIComponent(code)}`, {
-      signal,
+  // The code alone is not enough: the reply carries the id that cancels the
+  // booking, so the guest also proves the email it was made with. POST keeps
+  // that email out of URLs and access logs.
+  lookup: (code: string, email: string) =>
+    request<BookingOut>("/bookings/lookup", {
+      method: "POST",
+      body: { code, email },
     }),
   pay: (id: string) =>
     request<BookingOut>(`/bookings/${id}/pay`, { method: "POST" }),

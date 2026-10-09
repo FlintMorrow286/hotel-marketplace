@@ -9,7 +9,12 @@ from app.db.tx import serializable
 from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
 from app.modules.booking import service
-from app.modules.booking.schemas import HoldRequest, PartnerBookingLineOut, PartnerBookingOut
+from app.modules.booking.schemas import (
+    BookingLookup,
+    HoldRequest,
+    PartnerBookingLineOut,
+    PartnerBookingOut,
+)
 
 router = APIRouter(prefix="/v1/bookings", tags=["booking"])
 
@@ -30,7 +35,7 @@ async def list_partner_bookings(
 
     The partner sees who is arriving and how the booking reached them — guest
     contacts, the booking channel, and the commission the platform takes. A
-    guest looking up the same code through /by-code/{code} sees none of this.
+    guest finding the same booking through /lookup sees none of this.
     """
     pool = get_pool()
     conn = await pool.acquire()
@@ -125,12 +130,15 @@ async def create_hold(
         await pool.release(conn)
 
 
-@router.get("/by-code/{code}")
-async def get_booking_by_code(code: str) -> dict:
-    """Guest-facing lookup: the traveller knows the BK-XXXXXX code, never the id.
+@router.post("/lookup")
+async def lookup_booking(data: BookingLookup) -> dict:
+    """Guest-facing lookup: the BK-XXXXXX code plus the email the booking was made with.
 
-    The code is unguessable (6 chars from a 32-char alphabet) and answers only
-    public stay details — no guest contacts, no payment state.
+    The code is only ~30 bits and is printed in emails, so on its own it must
+    not unlock anything. This answers with the booking id, which is what
+    cancels or refunds the booking, so the guest has to prove the second
+    factor too. A wrong email and an unknown code both answer 404. The reply
+    carries only public stay details: no guest contacts, no payment state.
     """
     conn = await get_pool().acquire()
     try:
@@ -138,9 +146,10 @@ async def get_booking_by_code(code: str) -> dict:
             """
             SELECT id::text, code, status, total_amount::float8, hold_expires_at,
                    checkin_date, checkout_date, unit_type_id::text
-            FROM booking WHERE code = UPPER($1)
+            FROM booking WHERE code = UPPER($1) AND guest_email = $2
             """,
-            code,
+            data.code,
+            str(data.email),
         )
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="booking not found")

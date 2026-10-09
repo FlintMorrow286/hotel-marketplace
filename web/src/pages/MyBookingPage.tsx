@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 
 import { bookings } from "@/api/client";
 import { Button } from "@/components/ui/Button";
@@ -18,31 +18,26 @@ const STATUS_LABEL: Record<string, string> = {
 
 /**
  * The guest's way back to a booking: the traveller has the BK-XXXXXX code from
- * the success page or the email, never the UUID. A found booking links to its
- * checkout, which owns the pay/cancel actions.
+ * the success page or the email, never the UUID, and proves it with the email
+ * the booking was made with. A found booking links to its checkout, which owns
+ * the pay/cancel actions.
  */
 export function MyBookingPage() {
   useDocumentTitle("Моя бронь");
   const navigate = useNavigate();
   const [code, setCode] = useState("");
-  const [submitted, setSubmitted] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
 
-  // `isPending` stays true while the query is disabled (no submitted code),
-  // and the spinner on a button the guest cannot press yet reads as a stuck
-  // page. Only a fetch in flight is a loading state.
-  const { data: booking, isPending, isError } = useQuery({
-    queryKey: ["booking-by-code", submitted],
-    queryFn: ({ signal }) => bookings.byCode(submitted as string, signal),
-    enabled: submitted !== null,
-    retry: false,
+  const lookup = useMutation({
+    mutationFn: () => bookings.lookup(code.trim().toUpperCase(), email.trim()),
   });
-  const looking = submitted !== null && isPending;
+  const booking = lookup.data;
+  const canSubmit = Boolean(code.trim() && email.trim());
 
   function onSubmit(event: React.FormEvent) {
     event.preventDefault();
-    const trimmed = code.trim().toUpperCase();
-    if (!trimmed) return;
-    setSubmitted(trimmed);
+    if (!canSubmit) return;
+    lookup.mutate();
   }
 
   return (
@@ -54,7 +49,8 @@ export function MyBookingPage() {
         Найти мою бронь
       </h1>
       <p className="mt-4 text-text-secondary">
-        Введите код брони — он начинается на «BK» и есть в письме подтверждения.
+        Введите код брони и email, указанный при бронировании. Код начинается на
+        «BK» и есть в письме подтверждения.
       </p>
 
       <form
@@ -69,18 +65,29 @@ export function MyBookingPage() {
             onChange={(event) => setCode(event.target.value)}
             autoComplete="off"
             spellCheck={false}
-            hasError={isError}
-            hint={
-              isError
-                ? "Такой брони нет. Проверьте код — он в письме подтверждения."
-                : undefined
-            }
+            hasError={lookup.isError}
           />
         </div>
-        <Button type="submit" loading={looking} disabled={!code.trim()}>
+        <div className="flex-1">
+          <Input
+            label="Email"
+            type="email"
+            placeholder="name@example.com"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            autoComplete="email"
+            hasError={lookup.isError}
+          />
+        </div>
+        <Button type="submit" loading={lookup.isPending} disabled={!canSubmit}>
           Найти
         </Button>
       </form>
+      {lookup.isError ? (
+        <p role="alert" className="mt-3 text-sm text-feedback-error-text">
+          Бронь не найдена. Проверьте код и email, указанный при бронировании.
+        </p>
+      ) : null}
 
       {booking ? (
         <section className="mt-10 rounded-xl border border-border-default bg-surface-card p-6">

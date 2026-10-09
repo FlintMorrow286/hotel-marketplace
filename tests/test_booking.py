@@ -231,27 +231,37 @@ async def test_idempotency_same_key_other_guest_is_conflict(db_conn) -> None:
         )
 
 
-@pytest.mark.asyncio
-async def test_booking_by_code_roundtrip(committed_conn) -> None:
-    """The guest knows the BK-XXXXXX code, never the id.
-
-    A lowercase typed code still finds the booking: the lookup normalises.
-    """
-    from starlette.testclient import TestClient
-
-    from app.main import create_app
-
-    ut = await _seed_unit(committed_conn, "b6c@example.com")
+async def _lookup_fixture(committed_conn, email: str) -> tuple[dict, dict]:
+    """A committed hold and the guest who made it."""
+    ut = await _seed_unit(committed_conn, email)
+    guest = _guest()
     hold = await service.create_hold(
         committed_conn,
         unit_type_id=ut,
         checkin=TODAY,
         checkout=TODAY + dt.timedelta(days=2),
-        **_guest(),
+        **guest,
     )
+    return hold, guest
+
+
+@pytest.mark.asyncio
+async def test_booking_lookup_roundtrip(committed_conn) -> None:
+    """The guest knows the BK-XXXXXX code and the booking's email, never the id.
+
+    A lowercase typed code or email still finds the booking: both are normalised.
+    """
+    from starlette.testclient import TestClient
+
+    from app.main import create_app
+
+    hold, guest = await _lookup_fixture(committed_conn, "b6c@example.com")
 
     with TestClient(create_app()) as client:
-        response = client.get(f"/v1/bookings/by-code/{hold['code'].lower()}")
+        response = client.post(
+            "/v1/bookings/lookup",
+            json={"code": hold["code"].lower(), "email": guest["guest_email"].upper()},
+        )
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -261,13 +271,37 @@ async def test_booking_by_code_roundtrip(committed_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_booking_by_code_unknown_is_404(committed_conn) -> None:
+async def test_booking_lookup_needs_the_booking_email(committed_conn) -> None:
+    """The code alone must not hand out the booking id, which cancels and refunds."""
+    from starlette.testclient import TestClient
+
+    from app.main import create_app
+
+    hold, _ = await _lookup_fixture(committed_conn, "b6d@example.com")
+
+    with TestClient(create_app()) as client:
+        wrong_email = client.post(
+            "/v1/bookings/lookup", json={"code": hold["code"], "email": "someone@else.example"}
+        )
+        no_email = client.post("/v1/bookings/lookup", json={"code": hold["code"]})
+        old_route = client.get(f"/v1/bookings/by-code/{hold['code']}")
+
+    assert wrong_email.status_code == 404, wrong_email.text
+    assert hold["id"] not in wrong_email.text
+    assert no_email.status_code == 422, no_email.text
+    assert hold["id"] not in old_route.text
+
+
+@pytest.mark.asyncio
+async def test_booking_lookup_unknown_code_is_404(committed_conn) -> None:
     from starlette.testclient import TestClient
 
     from app.main import create_app
 
     with TestClient(create_app()) as client:
-        response = client.get("/v1/bookings/by-code/BK-NOPE00")
+        response = client.post(
+            "/v1/bookings/lookup", json={"code": "BK-NOPE00", "email": "nobody@example.com"}
+        )
 
     assert response.status_code == 404, response.text
 
