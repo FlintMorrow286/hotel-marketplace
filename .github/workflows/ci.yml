@@ -20,7 +20,11 @@ jobs:
     services:
       postgres:
         # 16 matches the version the schema is developed against.
-        image: postgres:16
+        # Both service images come from the AWS public ECR mirror of the Docker Official
+        # Images (same digests as Docker Hub): Docker Hub's anonymous pull limit is shared
+        # by GitHub's runners and made this job fail at "Initialize containers", before any
+        # step ran.
+        image: public.ecr.aws/docker/library/postgres:16
         env:
           POSTGRES_USER: hotel_user
           POSTGRES_PASSWORD: hotel_pass
@@ -35,7 +39,7 @@ jobs:
 
       redis:
         # Availability caching and the rate limiters live in Redis.
-        image: redis:7
+        image: public.ecr.aws/docker/library/redis:7
         ports:
           - 6379:6379
         options: >-
