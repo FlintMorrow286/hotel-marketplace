@@ -11,6 +11,7 @@ import asyncio
 import datetime as dt
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import asyncpg
 import pytest
@@ -273,15 +274,25 @@ async def test_serializable_does_not_retry_other_errors() -> None:
     assert calls == 1
 
 
-def test_a_conflict_that_outlasts_the_retries_answers_503() -> None:
+def test_a_conflict_that_outlasts_the_retries_answers_503(monkeypatch) -> None:
+    warnings: list[tuple[str, dict]] = []
+    # The app logger caches itself on first use, so a capture hook would miss it by now.
+    monkeypatch.setattr(
+        tx, "log", SimpleNamespace(warning=lambda event, **kw: warnings.append((event, kw)))
+    )
     app = FastAPI()
     tx.install_conflict_handler(app)
 
-    @app.get("/boom")
-    async def boom() -> None:
+    @app.get("/boom/{booking_id}")
+    async def boom(booking_id: str) -> None:
         raise asyncpg.SerializationError("could not serialize access")
 
-    response = TestClient(app).get("/boom")
+    response = TestClient(app).get("/boom/secret-booking-id")
 
     assert response.status_code == 503
     assert response.headers["retry-after"] == "1"
+    # The 503 replaces a 500 that used to log a traceback: it must not become silent,
+    # and the log carries the route template, never the id in the path.
+    assert [event for event, _ in warnings] == ["conflict-answered-503"]
+    assert warnings[0][1]["route"] == "/boom/{booking_id}"
+    assert "secret-booking-id" not in repr(warnings)

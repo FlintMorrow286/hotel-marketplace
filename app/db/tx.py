@@ -77,7 +77,15 @@ async def unlock(conn: asyncpg.Connection, scope: str, booking_id: str) -> None:
 def install_conflict_handler(app: FastAPI) -> None:
     """Answer 503 + Retry-After when a conflict outlasts the retries, not a 500."""
 
-    async def _on_conflict(_: Request, exc: Exception) -> JSONResponse:
+    async def _on_conflict(request: Request, exc: Exception) -> JSONResponse:
+        # The 500 this replaces logged a traceback; keep a trace of the 503. The route
+        # template, not the path: a booking id in the path is a credential.
+        log.warning(
+            "conflict-answered-503",
+            method=request.method,
+            route=getattr(request.scope.get("route"), "path", None),
+            error=str(exc),
+        )
         return JSONResponse(
             status_code=503,
             content={"detail": "conflicting update, please retry"},
