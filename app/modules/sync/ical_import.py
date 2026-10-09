@@ -98,6 +98,8 @@ async def apply_import(conn: asyncpg.Connection, unit_type_id: str, blocked: set
         unit_type_id,
     )
 
+    # A day the partner closed by hand stays theirs: the feed must not re-label it
+    # as import-sourced, or it would reopen when the date leaves the feed.
     blocked_list = sorted(blocked)
     if blocked_list:
         await conn.executemany(
@@ -105,6 +107,7 @@ async def apply_import(conn: asyncpg.Connection, unit_type_id: str, blocked: set
             UPDATE inventory_day
             SET closed = true, closed_source = $3
             WHERE unit_type_id = $1 AND date = $2
+              AND (NOT closed OR closed_source = $3)
             """,
             [(unit_type_id, d, IMPORT_SOURCE) for d in blocked_list],
         )

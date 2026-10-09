@@ -94,7 +94,11 @@ async def close_range(
             FROM d CROSS JOIN unit_type ut
             WHERE ut.id = $3
             ON CONFLICT (unit_type_id, date) DO UPDATE
-                SET closed = EXCLUDED.closed
+                SET closed = EXCLUDED.closed,
+                    -- closing by hand claims the day: an import-closed day the
+                    -- partner also stop-sells must survive the feed dropping it
+                    closed_source = CASE WHEN EXCLUDED.closed THEN 'manual'
+                                         ELSE inventory_day.closed_source END
             RETURNING date
         )
         SELECT date FROM ins
