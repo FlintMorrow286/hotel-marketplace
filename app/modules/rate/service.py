@@ -21,23 +21,32 @@ PRICE_CACHE_TTL_SEC = 60
 _PRICE_KEY = "prices:{rate_plan_id}:{from_iso}:{to_iso}"
 
 
+class ActivePlanExists(Exception):
+    """The unit type already has an active rate plan (one is allowed)."""
+
+
 async def create_rate_plan(
     conn: asyncpg.Connection,
     unit_type_id: str,
     name: str,
     cancellation_policy: str = "flexible",
 ) -> dict:
-    row = await conn.fetchrow(
-        """
-        INSERT INTO rate_plan (unit_type_id, name, cancellation_policy)
-        VALUES ($1, $2, $3)
-        RETURNING id::text, unit_type_id::text, name, cancellation_policy,
-                  active, commission_rate::float8
-        """,
-        unit_type_id,
-        name,
-        cancellation_policy,
-    )
+    try:
+        # Own savepoint: a rejected insert must not abort the caller's transaction.
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO rate_plan (unit_type_id, name, cancellation_policy)
+                VALUES ($1, $2, $3)
+                RETURNING id::text, unit_type_id::text, name, cancellation_policy,
+                          active, commission_rate::float8
+                """,
+                unit_type_id,
+                name,
+                cancellation_policy,
+            )
+    except asyncpg.UniqueViolationError as exc:
+        raise ActivePlanExists(unit_type_id) from exc
     assert row is not None
     return dict(row)
 

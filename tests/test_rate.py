@@ -60,6 +60,54 @@ async def test_create_and_list_rate_plan(db_conn) -> None:
     assert len(plans) == 1
 
 
+@pytest.mark.asyncio
+async def test_second_active_rate_plan_is_rejected(db_conn) -> None:
+    """Two active plans priced every night twice and made the room unbookable."""
+    seed = await _seed(db_conn, "r-one-active@example.com")
+    await service.create_rate_plan(db_conn, seed["unit_type_id"], "Основной")
+
+    with pytest.raises(service.ActivePlanExists):
+        await service.create_rate_plan(db_conn, seed["unit_type_id"], "Второй")
+
+    # The rejected insert leaves the transaction usable and nothing behind.
+    plans = await service.list_rate_plans(db_conn, seed["unit_type_id"])
+    assert [p["name"] for p in plans] == ["Основной"]
+
+
+@pytest.mark.asyncio
+async def test_inactive_rate_plan_does_not_block_a_new_one(db_conn) -> None:
+    seed = await _seed(db_conn, "r-inactive@example.com")
+    old = await service.create_rate_plan(db_conn, seed["unit_type_id"], "Старый")
+    await db_conn.execute("UPDATE rate_plan SET active = false WHERE id = $1", old["id"])
+
+    new = await service.create_rate_plan(db_conn, seed["unit_type_id"], "Новый")
+
+    plans = await service.list_rate_plans(db_conn, seed["unit_type_id"])
+    assert [p["id"] for p in plans if p["active"]] == [new["id"]]
+
+
+@pytest.mark.asyncio
+async def test_second_rate_plan_over_http_is_409(committed_conn) -> None:
+    """The cabinet's "create plan" fired twice (two tabs) answers 409, not a broken room."""
+    from starlette.testclient import TestClient
+
+    from app.main import create_app
+    from app.modules.auth.jwt import create_access_token
+
+    seed = await _seed(committed_conn, "r-http@example.com")
+    token = create_access_token(seed["partner_id"], scope="partner")
+    headers = {"Authorization": f"Bearer {token}"}
+    body = {"unit_type_id": seed["unit_type_id"], "name": "Основной тариф"}
+
+    with TestClient(create_app()) as client:
+        first = client.post("/v1/partner/rate-plans", json=body, headers=headers)
+        second = client.post("/v1/partner/rate-plans", json=body, headers=headers)
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 409, second.text
+    assert len(await service.list_rate_plans(committed_conn, seed["unit_type_id"])) == 1
+
+
 # ---------------------------------------------------------------- prices
 
 

@@ -54,9 +54,15 @@ async def create_rate_plan(
         )
         if not owned:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unit type not found")
-        return await service.create_rate_plan(
-            conn, data.unit_type_id, data.name, data.cancellation_policy
-        )
+        try:
+            return await service.create_rate_plan(
+                conn, data.unit_type_id, data.name, data.cancellation_policy
+            )
+        except service.ActivePlanExists as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="unit type already has an active rate plan",
+            ) from exc
     finally:
         await get_pool().release(conn)
 
