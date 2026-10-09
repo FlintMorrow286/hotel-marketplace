@@ -30,6 +30,14 @@ class UnsafeUrl(ValueError):
     """The URL points at (or resolves to) a non-public address."""
 
 
+class InvalidUrl(UnsafeUrl):
+    """The URL cannot be parsed or looked up, so it cannot be shown to be public.
+
+    An UnsafeUrl on purpose: delivery and sync already catch that, so a malformed
+    stored URL is a failed delivery (recorded, retried), not a silent stall.
+    """
+
+
 def is_public(address: str) -> bool:
     ip = ipaddress.ip_address(address.split("%")[0])  # drop an IPv6 scope id
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
@@ -43,22 +51,30 @@ async def _resolve(host: str, port: int) -> list[str]:
 
 
 async def assert_public_url(url: str) -> None:
-    """Raise UnsafeUrl unless every address the URL's host resolves to is public."""
+    """Raise UnsafeUrl unless every address the URL's host resolves to is public.
+
+    A URL that cannot be parsed (bad port, unbalanced bracket) or whose host name
+    cannot be encoded for a lookup (empty or over-long label) raises InvalidUrl:
+    nothing can request it either.
+    """
+    try:
+        parsed = urlparse(url)
+        host, port = parsed.hostname, parsed.port
+    except ValueError as exc:
+        raise InvalidUrl(f"url is not valid: {exc}") from exc
+    if not host:
+        raise InvalidUrl("url is not valid: it has no host")
     if settings.allow_private_targets:
         return
-    parsed = urlparse(url)
-    host = parsed.hostname
-    if not host:
-        raise UnsafeUrl("url has no host")
     try:
         addresses = [str(ipaddress.ip_address(host))]
     except ValueError:
         try:
-            addresses = await _resolve(
-                host, parsed.port or (443 if parsed.scheme == "https" else 80)
-            )
+            addresses = await _resolve(host, port or (443 if parsed.scheme == "https" else 80))
         except OSError:
             return  # does not resolve (yet); the request-time check runs again
+        except ValueError as exc:  # UnicodeError: an empty or over-long label
+            raise InvalidUrl(f"url is not valid: {exc}") from exc
     if any(not is_public(a) for a in addresses):
         raise UnsafeUrl(f"{host} points at a non-public address")
 
@@ -67,6 +83,10 @@ async def require_public_url(url: str) -> None:
     """assert_public_url for a route: answers 422 instead of raising."""
     try:
         await assert_public_url(url)
+    except InvalidUrl as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     except UnsafeUrl as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

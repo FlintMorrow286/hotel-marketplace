@@ -34,6 +34,11 @@ const MESSAGES: ReadonlyArray<[RegExp, string]> = [
     /at most \d+ photos/i,
     "Слишком много фото у одного объекта. Удалите лишнее, чтобы добавить новое.",
   ],
+  // webhook receivers and iCal feeds: our servers request them (app/utils/netguard.py)
+  [
+    /must point to a public address/i,
+    "Адрес должен быть доступен из интернета. Адреса localhost и внутренней сети (10.x, 192.168.x и т. п.) не поддерживаются.",
+  ],
 ];
 
 /** Logins, registration and booking lookups answer 429 once guessed at too often. */

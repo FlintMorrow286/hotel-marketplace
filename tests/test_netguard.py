@@ -27,6 +27,20 @@ from app.utils import netguard
 
 PUBLIC_IP = "93.184.216.34"
 
+# URLs a partner can type that no client can request. None of them may escape the guard
+# as a bare ValueError: on the routes that was a 500; in delivery it escaped deliver()
+# into the worker, which swallows it, so the event sat claimed with no attempt, no
+# delivery row and no log line.
+MALFORMED = [
+    "http://example.com:99999/hook",  # port out of range
+    "http://example.com:abc/hook",  # port is not a number
+    "http://1.2.3.4:99999/hook",  # the same on an address literal
+    "http://[::1/hook",  # unbalanced bracket
+    "http://:80/hook",  # no host
+    "http://" + "a" * 64 + ".example/hook",  # a label too long to look up
+    "http://a..example/hook",  # an empty label
+]
+
 
 @pytest.fixture(autouse=True)
 def guard_on(monkeypatch) -> None:
@@ -124,6 +138,18 @@ async def test_the_guard_can_be_switched_off_for_development(monkeypatch) -> Non
     await netguard.assert_public_url("http://127.0.0.1:9/hook")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", MALFORMED)
+async def test_a_url_that_cannot_be_parsed_or_looked_up_is_invalid(url: str) -> None:
+    with pytest.raises(netguard.InvalidUrl):
+        await netguard.assert_public_url(url)
+
+
+def test_an_invalid_url_is_an_unsafe_url() -> None:
+    """Delivery and sync catch UnsafeUrl; this is what keeps a bad URL from escaping them."""
+    assert issubclass(netguard.InvalidUrl, netguard.UnsafeUrl)
+
+
 # ---------------------------------------------------------------- webhook delivery
 
 
@@ -168,6 +194,16 @@ async def test_delivery_to_a_public_address_still_works(monkeypatch) -> None:
     )
 
     assert (ok, status_code, error) == (True, 204, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", [*MALFORMED, "http://\uff11\uff12\uff17.\uff10.\uff10.\uff11/hook"])
+async def test_delivery_to_a_malformed_url_fails_cleanly(url: str) -> None:
+    """deliver() answers (ok, status, error) for any URL, httpx's own refusals included."""
+    ok, status_code, error = await deliver.deliver(url, "secret-secret", _event())
+
+    assert (ok, status_code) == (False, None)
+    assert error
 
 
 # ---------------------------------------------------------------- iCal import
@@ -227,3 +263,33 @@ async def test_webhook_and_ical_urls_must_be_public(committed_conn, monkeypatch)
     assert all("public address" in r.text for r in refused)
     assert accepted.status_code == 201, accepted.text
     assert ical.status_code == 422 and "public address" in ical.text
+
+
+@pytest.mark.asyncio
+async def test_malformed_urls_are_422_not_500(committed_conn) -> None:
+    email = f"bad-{uuid.uuid4().hex[:8]}@example.com"
+    partner_id = await auth_service.register_partner(
+        committed_conn, PartnerRegisterRequest(email=email, password="secret123", name="Tester")
+    )
+    headers = {"Authorization": f"Bearer {create_access_token(partner_id, scope='partner')}"}
+
+    with TestClient(create_app()) as client:
+        responses = [
+            client.post(
+                "/v1/partner/webhooks",
+                json={"url": url, "secret": "route-level-secret"},
+                headers=headers,
+            )
+            for url in MALFORMED
+        ] + [
+            client.put(
+                f"/v1/partner/unit-types/{uuid.uuid4()}/ical-import",
+                json={"url": url},
+                headers=headers,
+            )
+            for url in MALFORMED
+        ]
+
+    assert [r.status_code for r in responses] == [422] * (2 * len(MALFORMED))
+    # A mistyped port is not "a private address": the UI must not say so.
+    assert not any("public address" in r.text for r in responses)

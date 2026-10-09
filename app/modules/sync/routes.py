@@ -21,8 +21,12 @@ class ImportSubscriptionRequest(BaseModel):
 
 
 def _check_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    try:
+        parsed = urlparse(url)
+        valid = parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except ValueError:  # e.g. an unbalanced "[" in the host
+        valid = False
+    if not valid:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="url must be http(s)://…",

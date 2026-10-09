@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { Badge } from "@/components/ui/Badge";
+import { humanError } from "@/utils/errors";
 
 const EVENT_LABELS: Record<string, string> = {
   "booking.confirmed": "Бронь подтверждена",
@@ -257,7 +258,10 @@ function CreateWebhookButton() {
           </fieldset>
           {create.isError ? (
             <p role="alert" className="text-sm text-feedback-error-text">
-              Не удалось создать вебхук. Проверьте URL и попробуйте ещё раз.
+              {humanError(
+                create.error,
+                "Не удалось создать вебхук. Проверьте URL и попробуйте ещё раз.",
+              )}
             </p>
           ) : null}
           <div className="flex justify-end gap-2 pt-2">

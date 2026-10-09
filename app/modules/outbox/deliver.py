@@ -52,7 +52,7 @@ async def deliver(url: str, secret: str, event: dict) -> tuple[bool, int | None,
             event_hooks=GUARD_HOOKS,
         ) as client:
             response = await client.post(url, content=body, headers=headers)
-    except (httpx.HTTPError, UnsafeUrl) as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, UnsafeUrl) as exc:
         return False, None, str(exc)
 
     if 200 <= response.status_code < 300:

@@ -7,6 +7,7 @@ import type { UnitTypeOut } from "@/api/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
+import { humanError } from "@/utils/errors";
 
 /**
  * iCal import per unit type. An external calendar's blocked dates become
@@ -145,7 +146,7 @@ function IcalImportRow({ unitType }: { unitType: UnitTypeOut }) {
 
       {save.isError ? (
         <p role="alert" className="mt-2 text-xs text-feedback-error-text">
-          Не удалось сохранить ссылку. Попробуйте ещё раз.
+          {humanError(save.error, "Не удалось сохранить ссылку. Попробуйте ещё раз.")}
         </p>
       ) : null}
       {syncNow.isError ? (
