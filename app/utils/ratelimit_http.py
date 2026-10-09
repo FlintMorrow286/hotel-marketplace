@@ -6,9 +6,15 @@ addresses, per account or per code. Over the limit the caller gets 429 with a
 Retry-After, the same answer the channel API gives (see app/utils/ratelimit.py:
 fixed window in Redis, failing open when Redis is down).
 
-Behind a reverse proxy the app has to see the real client address (uvicorn
-`--proxy-headers` with `--forwarded-allow-ips`); otherwise every user shares the
-proxy's bucket.
+Behind a reverse proxy the app has to see the real client address. uvicorn reads
+X-Forwarded-For only from the peers in --forwarded-allow-ips (default 127.0.0.1,
+::1), so a proxy on another host must be listed there or every user shares the
+proxy's bucket; with '*' anyone can forge an address and skip the per-address
+limit (the per-account and per-code ceilings still hold).
+
+Those ceilings are shared by everyone who tries the account or code, so someone who
+exhausts one also makes its owner wait out the window. That is the price of
+bounding a guess spread over many addresses.
 """
 
 from __future__ import annotations
