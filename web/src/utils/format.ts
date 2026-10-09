@@ -23,6 +23,17 @@ export function formatPrice(value: number, currency = "RUB"): string {
   return `${grouped} ${symbol}`;
 }
 
+/** An ISO date as the guest reads it: `2026-10-29` -> `29.10.2026` (no timezone shift). */
+export function formatDate(iso: string): string {
+  const [year, month, day] = iso.slice(0, 10).split("-");
+  return `${day}.${month}.${year}`;
+}
+
+/** A property's check-in/out time from the API (`14:00:00`) without the seconds. */
+export function formatTime(value: string): string {
+  return value.slice(0, 5);
+}
+
 /** Sentence form: `от 7 200 ₽ за ночь` — the catalog card's price line. */
 export function formatPriceFrom(value: number, currency = "RUB"): string {
   return `от ${formatPrice(value, currency)} за ночь`;

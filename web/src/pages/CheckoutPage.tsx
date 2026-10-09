@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, Clock } from "lucide-react";
 import { bookings } from "@/api/client";
 import { humanError } from "@/utils/errors";
+import { formatDate, formatPrice } from "@/utils/format";
 import { Button } from "@/components/ui/Button";
 import { CancelBooking } from "@/components/CancelBooking";
 import { useCountdown, formatCountdown } from "@/hooks/useCountdown";
@@ -85,10 +86,10 @@ export function CheckoutPage() {
       <section className="mt-10 rounded-xl border border-border-default bg-surface-card p-8">
         <h2 className="font-serif text-2xl font-normal">Ваша бронь</h2>
         <dl className="mt-6 space-y-3 text-sm">
-          <Row label="Заезд">{booking.checkin_date}</Row>
-          <Row label="Выезд">{booking.checkout_date}</Row>
+          <Row label="Заезд">{formatDate(booking.checkin_date)}</Row>
+          <Row label="Выезд">{formatDate(booking.checkout_date)}</Row>
           <Row label="Сумма">
-            <strong>{booking.total_amount.toFixed(0)} ₽</strong>
+            <strong>{formatPrice(booking.total_amount)}</strong>
           </Row>
         </dl>
 
@@ -103,8 +104,8 @@ export function CheckoutPage() {
                   key={line.date}
                   className="flex justify-between gap-4 text-text-secondary"
                 >
-                  <span>{line.date}</span>
-                  <span>{line.price.toFixed(0)} ₽</span>
+                  <span>{formatDate(line.date)}</span>
+                  <span>{formatPrice(line.price)}</span>
                 </li>
               ))}
             </ul>
@@ -130,7 +131,7 @@ export function CheckoutPage() {
             className="w-full"
             size="lg"
           >
-            Оплатить {booking.total_amount.toFixed(0)} ₽
+            Оплатить {formatPrice(booking.total_amount)}
           </Button>
           {pay.isError ? (
             <p
@@ -142,7 +143,7 @@ export function CheckoutPage() {
             </p>
           ) : null}
           <p className="mt-4 text-center text-xs leading-relaxed text-text-tertiary">
-            100% предоплата. Отмена бесплатна до 24:00 дня заезда.
+            100% предоплата. Отмена бесплатна за сутки до заезда.
           </p>
           <p className="mt-2 text-center text-xs text-text-tertiary">
             Тестовая оплата, деньги не списываются.

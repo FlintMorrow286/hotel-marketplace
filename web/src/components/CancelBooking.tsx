@@ -33,7 +33,7 @@ export function CancelBooking({ code, onConfirm, pending, error }: CancelBooking
           Отменить бронь
         </Button>
         <p className="text-sm text-text-tertiary">
-          Отмена бесплатна до 24:00 дня заезда.
+          Отмена бесплатна за сутки до заезда.
         </p>
       </div>
 
@@ -45,7 +45,7 @@ export function CancelBooking({ code, onConfirm, pending, error }: CancelBooking
       >
         <p className="mt-4 text-sm leading-relaxed text-text-secondary">
           Бронь <span className="font-mono">{code}</span> будет отменена, а
-          даты освободятся для других гостей. Бесплатно до 24:00 дня заезда,
+          даты освободятся для других гостей. Бесплатно за сутки до заезда,
           позже списывается штраф.
         </p>
 

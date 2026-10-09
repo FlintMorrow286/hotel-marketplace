@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { isTooManyAttempts, TOO_MANY_ATTEMPTS } from "@/utils/errors";
+import { formatDate, formatPrice } from "@/utils/format";
 
 const STATUS_LABEL: Record<string, string> = {
   hold: "Ожидает оплаты",
@@ -105,16 +106,16 @@ export function MyBookingPage() {
           <dl className="mt-5 space-y-3 text-sm">
             <div className="flex justify-between gap-4">
               <dt className="text-text-secondary">Заезд</dt>
-              <dd>{booking.checkin_date}</dd>
+              <dd>{formatDate(booking.checkin_date)}</dd>
             </div>
             <div className="flex justify-between gap-4">
               <dt className="text-text-secondary">Выезд</dt>
-              <dd>{booking.checkout_date}</dd>
+              <dd>{formatDate(booking.checkout_date)}</dd>
             </div>
             <div className="flex justify-between gap-4 border-t border-border-default pt-3">
               <dt className="text-text-secondary">Сумма</dt>
               <dd>
-                <strong>{booking.total_amount.toFixed(0)} ₽</strong>
+                <strong>{formatPrice(booking.total_amount)}</strong>
               </dd>
             </div>
           </dl>

@@ -6,6 +6,7 @@ import type { RatePlan, UnitTypeOut } from "@/api/types";
 import { humanError } from "@/utils/errors";
 import { plural } from "@/utils/plural";
 import { daysBetween } from "@/utils/date";
+import { formatPrice } from "@/utils/format";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
@@ -202,7 +203,7 @@ function SetPriceForm({
         <p className="text-sm text-text-secondary">
           {nights}{" "}
           {plural(nights, "ночь", "ночи", "ночей")} · итого{" "}
-          {(nights * price).toFixed(0)} ₽
+          {formatPrice(nights * price)}
         </p>
       ) : (
         <p className="text-sm text-feedback-error-text">

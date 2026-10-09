@@ -38,7 +38,7 @@ export function BookingSuccessPage() {
         <p className="mt-3 font-mono text-sm text-text-tertiary">{booking.code}</p>
       ) : null}
       <p className="mx-auto mt-8 max-w-md text-sm leading-relaxed text-text-tertiary">
-        Бесплатная отмена до 24:00 дня заезда. После этого срока списывается
+        Бесплатная отмена за сутки до заезда. После этого срока списывается
         штраф.
       </p>
       <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:justify-center">
