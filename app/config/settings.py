@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     # The outgoing key, readable only. Empty except during a rotation.
     webhook_seal_key_previous: str = Field(default="")
 
+    # ----- URLs partners control -----
+    # Webhook receivers and iCal feeds are requested by our servers. Private,
+    # loopback and link-local addresses are refused (app/utils/netguard.py)
+    # unless this is on, which is for a developer pointing a webhook at localhost.
+    allow_private_targets: bool = Field(default=False)
+
     # ----- Webhook delivery retention -----
     # webhook_delivery is partitioned by delivered_at, one partition a month,
     # and ages out on a schedule (app/modules/outbox/retention.py) — never in

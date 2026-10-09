@@ -11,6 +11,7 @@ from app.db.pool import get_pool
 from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
 from app.modules.sync import ical_export, ical_import
+from app.utils.netguard import require_public_url
 
 router = APIRouter(prefix="/v1", tags=["sync"])
 
@@ -136,6 +137,7 @@ async def set_ical_import(
 ) -> dict:
     """Create or replace the imported calendar URL. Sync runs on the next tick."""
     _check_url(data.url)
+    await require_public_url(data.url)
     conn = await get_pool().acquire()
     try:
         owned = await conn.fetchval(

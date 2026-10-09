@@ -14,6 +14,7 @@ import json
 import httpx
 
 from app.utils.logger import get_logger
+from app.utils.netguard import GUARD_HOOKS, UnsafeUrl
 
 log = get_logger(__name__)
 
@@ -45,10 +46,13 @@ async def deliver(url: str, secret: str, event: dict) -> tuple[bool, int | None,
 
     try:
         async with httpx.AsyncClient(
-            timeout=DELIVERY_TIMEOUT_SEC, follow_redirects=True, max_redirects=MAX_REDIRECTS
+            timeout=DELIVERY_TIMEOUT_SEC,
+            follow_redirects=True,
+            max_redirects=MAX_REDIRECTS,
+            event_hooks=GUARD_HOOKS,
         ) as client:
             response = await client.post(url, content=body, headers=headers)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, UnsafeUrl) as exc:
         return False, None, str(exc)
 
     if 200 <= response.status_code < 300:

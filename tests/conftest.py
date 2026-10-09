@@ -33,6 +33,10 @@ import os
 # test module touches `create_app`, so the flag is always in place first.
 os.environ["PYTEST_RUNNING"] = "1"
 
+# The suite points webhooks at localhost:9. Only tests/test_netguard.py turns the guard
+# against private addresses back on.
+os.environ.setdefault("ALLOW_PRIVATE_TARGETS", "1")
+
 from collections.abc import AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
