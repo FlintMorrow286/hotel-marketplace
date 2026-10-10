@@ -22,6 +22,8 @@ from app.modules.auth import service as auth_service
 from app.modules.auth.jwt import create_access_token
 from app.modules.auth.schemas import PartnerRegisterRequest
 from app.modules.outbox import deliver
+from app.modules.property import service as property_service
+from app.modules.property.schemas import PropertyCreate
 from app.modules.sync import ical_import
 from app.utils import netguard
 
@@ -39,6 +41,16 @@ MALFORMED = [
     "http://:80/hook",  # no host
     "http://" + "a" * 64 + ".example/hook",  # a label too long to look up
     "http://a..example/hook",  # an empty label
+]
+
+# URLs urlparse accepts but httpx's own parser refuses (a control character, over 64 KB).
+# The guard let them through, so they were stored; on the iCal side the refusal escaped
+# sync_subscription: a 500 on "sync now", and in the poller, which swallows what escapes,
+# a row stuck at "pending" with nothing for the partner to see.
+UNBUILDABLE = [
+    "http://example.com/a\x01b",
+    "http://example.com/?q=\x7f",
+    "http://example.com/" + "a" * 70000,
 ]
 
 
@@ -68,7 +80,13 @@ def _mock_http(monkeypatch, module, handler) -> None:
 
 @pytest.mark.parametrize(
     "address",
-    ["8.8.8.8", PUBLIC_IP, "2001:4860:4860::8888"],
+    [
+        "8.8.8.8",
+        PUBLIC_IP,
+        "2001:4860:4860::8888",
+        "64:ff9b::808:808",  # 8.8.8.8 behind a NAT64 gateway
+        "::ffff:0:808:808",  # 8.8.8.8 behind an SIIT translator
+    ],
 )
 def test_public_addresses_are_allowed(address: str) -> None:
     assert netguard.is_public(address)
@@ -91,6 +109,17 @@ def test_public_addresses_are_allowed(address: str) -> None:
         "fc00::1",
         "::ffff:127.0.0.1",  # IPv4 loopback written as IPv6
         "::ffff:10.0.0.1",
+        # Python calls these globally reachable; a translator forwards them to the IPv4
+        # host in the low 32 bits, so the private IPv4 behind them must be refused.
+        "64:ff9b::7f00:1",
+        "64:ff9b::a00:1",
+        "64:ff9b::a9fe:a9fe",
+        "64:ff9b::",
+        "::ffff:0:a00:1",
+        "::ffff:0:7f00:1",
+        "::7f00:1",  # deprecated IPv4-compatible form
+        "::a00:1",
+        "fec0::1",  # deprecated site-local
     ],
 )
 def test_private_addresses_are_refused(address: str) -> None:
@@ -104,6 +133,7 @@ def test_private_addresses_are_refused(address: str) -> None:
         "http://127.0.0.1:8000/hook",
         "http://169.254.169.254/latest/meta-data/",
         "http://[::1]/hook",
+        "http://[64:ff9b::a00:1]/hook",  # 10.0.0.1 behind a NAT64 gateway
         "http://localhost:9/hook",
         "http://2130706433/hook",  # 127.0.0.1 as one integer
     ],
@@ -141,6 +171,17 @@ async def test_the_guard_can_be_switched_off_for_development(monkeypatch) -> Non
 @pytest.mark.asyncio
 @pytest.mark.parametrize("url", MALFORMED)
 async def test_a_url_that_cannot_be_parsed_or_looked_up_is_invalid(url: str) -> None:
+    with pytest.raises(netguard.InvalidUrl):
+        await netguard.assert_public_url(url)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", UNBUILDABLE)
+async def test_a_url_httpx_cannot_build_is_invalid(url: str, monkeypatch) -> None:
+    with pytest.raises(netguard.InvalidUrl):
+        await netguard.assert_public_url(url)
+    # With the guard off for development the answer is the same: nothing can request it.
+    monkeypatch.setattr(settings, "allow_private_targets", True)
     with pytest.raises(netguard.InvalidUrl):
         await netguard.assert_public_url(url)
 
@@ -197,7 +238,9 @@ async def test_delivery_to_a_public_address_still_works(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("url", [*MALFORMED, "http://\uff11\uff12\uff17.\uff10.\uff10.\uff11/hook"])
+@pytest.mark.parametrize(
+    "url", [*MALFORMED, *UNBUILDABLE, "http://\uff11\uff12\uff17.\uff10.\uff10.\uff11/hook"]
+)
 async def test_delivery_to_a_malformed_url_fails_cleanly(url: str) -> None:
     """deliver() answers (ok, status, error) for any URL, httpx's own refusals included."""
     ok, status_code, error = await deliver.deliver(url, "secret-secret", _event())
@@ -272,6 +315,7 @@ async def test_malformed_urls_are_422_not_500(committed_conn) -> None:
         committed_conn, PartnerRegisterRequest(email=email, password="secret123", name="Tester")
     )
     headers = {"Authorization": f"Bearer {create_access_token(partner_id, scope='partner')}"}
+    urls = [*MALFORMED, *UNBUILDABLE]
 
     with TestClient(create_app()) as client:
         responses = [
@@ -280,16 +324,60 @@ async def test_malformed_urls_are_422_not_500(committed_conn) -> None:
                 json={"url": url, "secret": "route-level-secret"},
                 headers=headers,
             )
-            for url in MALFORMED
+            for url in urls
         ] + [
             client.put(
                 f"/v1/partner/unit-types/{uuid.uuid4()}/ical-import",
                 json={"url": url},
                 headers=headers,
             )
-            for url in MALFORMED
+            for url in urls
         ]
 
-    assert [r.status_code for r in responses] == [422] * (2 * len(MALFORMED))
+    assert [r.status_code for r in responses] == [422] * (2 * len(urls))
     # A mistyped port is not "a private address": the UI must not say so.
     assert not any("public address" in r.text for r in responses)
+
+
+async def _unit_type(conn) -> tuple[str, str]:
+    partner_id = await auth_service.register_partner(
+        conn,
+        PartnerRegisterRequest(
+            email=f"ical-{uuid.uuid4().hex[:8]}@example.com", password="secret123", name="Tester"
+        ),
+    )
+    prop = await property_service.create_property(
+        conn, partner_id, PropertyCreate(name="Alpha", property_type="hotel", city="Yalta")
+    )
+    unit_id = await conn.fetchval(
+        "INSERT INTO unit_type (property_id, name, capacity, total_units, base_price) "
+        "VALUES ($1, 'Стандарт', 2, 1, 5000) RETURNING id::text",
+        prop.id,
+    )
+    return partner_id, unit_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", UNBUILDABLE)
+async def test_a_stored_ical_url_httpx_cannot_build_is_a_recorded_failure(
+    committed_conn, url: str
+) -> None:
+    """A row stored before the save-time check: 'sync now' answered 500, and the poller left
+    it at 'pending' with no error. Now the failure is recorded for the partner to read."""
+    partner_id, unit_id = await _unit_type(committed_conn)
+    await committed_conn.execute(
+        "INSERT INTO ical_subscription (unit_type_id, url) VALUES ($1, $2)", unit_id, url
+    )
+    headers = {"Authorization": f"Bearer {create_access_token(partner_id, scope='partner')}"}
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            f"/v1/partner/unit-types/{unit_id}/ical-import/sync", headers=headers
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "error"
+    row = await committed_conn.fetchrow(
+        "SELECT last_status, last_error FROM ical_subscription WHERE unit_type_id = $1", unit_id
+    )
+    assert row["last_status"] == "error" and row["last_error"]

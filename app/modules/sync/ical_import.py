@@ -48,7 +48,7 @@ async def sync_subscription(conn: asyncpg.Connection, subscription_id: str) -> d
     try:
         text = await _fetch(sub["url"])
         events = parse_calendar(text)
-    except (httpx.HTTPError, IcalParseError, ValueError) as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, IcalParseError, ValueError) as exc:
         await _mark(conn, sub["id"], "error", str(exc)[:500], 0)
         log.warning("ical-import-failed", subscription_id=sub["id"], error=str(exc))
         return {"status": "error", "error": str(exc)}

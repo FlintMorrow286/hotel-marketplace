@@ -38,10 +38,26 @@ class InvalidUrl(UnsafeUrl):
     """
 
 
+# IPv6 prefixes whose low 32 bits are an IPv4 address: a translator (NAT64, SIIT) forwards
+# the request to that IPv4 host, so that is the address that has to be public. Python
+# calls the NAT64 prefix globally reachable, whatever sits behind it.
+_TRANSLATOR_PREFIXES = (
+    ipaddress.ip_network("64:ff9b::/96"),
+    ipaddress.ip_network("::ffff:0:0:0/96"),
+)
+# Deprecated forms that were never public: `::a.b.c.d` and site-local `fec0::/10`.
+_IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
+
+
 def is_public(address: str) -> bool:
     ip = ipaddress.ip_address(address.split("%")[0])  # drop an IPv6 scope id
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif any(ip in prefix for prefix in _TRANSLATOR_PREFIXES):
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        elif ip in _IPV4_COMPATIBLE or ip.is_site_local:
+            return False
     return ip.is_global and not ip.is_multicast
 
 
@@ -53,14 +69,15 @@ async def _resolve(host: str, port: int) -> list[str]:
 async def assert_public_url(url: str) -> None:
     """Raise UnsafeUrl unless every address the URL's host resolves to is public.
 
-    A URL that cannot be parsed (bad port, unbalanced bracket) or whose host name
-    cannot be encoded for a lookup (empty or over-long label) raises InvalidUrl:
-    nothing can request it either.
+    A URL that cannot be parsed (bad port, unbalanced bracket), that httpx refuses to
+    build (a control character, more than 64 KB) or whose host name cannot be encoded
+    for a lookup (empty or over-long label) raises InvalidUrl: nothing can request it.
     """
     try:
         parsed = urlparse(url)
         host, port = parsed.hostname, parsed.port
-    except ValueError as exc:
+        httpx.URL(url)  # urlparse accepts what httpx's own parser then refuses
+    except (ValueError, httpx.InvalidURL) as exc:
         raise InvalidUrl(f"url is not valid: {exc}") from exc
     if not host:
         raise InvalidUrl("url is not valid: it has no host")
