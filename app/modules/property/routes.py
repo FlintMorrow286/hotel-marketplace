@@ -4,7 +4,7 @@ import datetime as dt
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel
 
 from app.db.pool import get_pool
 from app.modules.auth.deps import require_scope
@@ -19,10 +19,17 @@ from app.modules.property.unit_type_routes import UnitTypeOut
 
 router = APIRouter(prefix="/v1", tags=["property"])
 
-# `guests` is compared with an int4 column and `offset` is a bigint. Past the type
-# asyncpg raises DataError, which uuid_http answers as a 404 "not found".
+# A value Postgres cannot take makes asyncpg raise DataError, which uuid_http answers as a
+# 404 "not found": an integer past its column's type (`guests` is compared with an int4
+# column, `offset` is a bigint) or a NUL in text. Those are refused here with a 422.
 INT4_MAX = 2**31 - 1
 INT8_MAX = 2**63 - 1
+
+
+def _no_nul(value: str | None) -> str | None:
+    if value is not None and "\x00" in value:
+        raise ValueError("must not contain a NUL character")
+    return value
 
 
 async def _partner_conn(token: Annotated[TokenData, Depends(require_scope("partner"))]):
@@ -90,9 +97,9 @@ class PropertyPage(BaseModel):
 
 @router.get("/properties", response_model=PropertyPage)
 async def list_public_properties(
-    city: str | None = None,
+    city: Annotated[str | None, Query(), AfterValidator(_no_nul)] = None,
     guests: Annotated[int | None, Query(ge=1, le=INT4_MAX)] = None,
-    q: Annotated[str | None, Query(max_length=100)] = None,
+    q: Annotated[str | None, Query(max_length=100), AfterValidator(_no_nul)] = None,
     date_from: dt.date | None = Query(default=None),
     date_to: dt.date | None = Query(default=None),
     amenities: list[str] | None = Query(default=None),

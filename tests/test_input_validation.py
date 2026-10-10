@@ -3,8 +3,8 @@
 `guests=0` is not a party, `%` and `_` in the search box acted as LIKE
 wildcards, a stay that does not run forward answered "dates not available"
 instead of "bad request", the availability read took a ten-year range, an
-integer past its column's type answered 404, and the catalog's date filter cost
-a night per day of whatever range it was sent.
+integer past its column's type or a NUL in text answered 404, and the catalog's
+date filter cost a night per day of whatever range it was sent.
 """
 
 from __future__ import annotations
@@ -74,8 +74,8 @@ async def test_search_text_is_not_a_like_pattern(db_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_catalog_filters_reject_nonsense(committed_conn) -> None:
-    """Past its column's integer type a value reached the database, asyncpg raised
-    DataError and the uuid handler answered it as a 404 "not found"."""
+    """A value the database cannot take (an integer past its column's type, a NUL in text)
+    reached it, asyncpg raised DataError and the uuid handler answered a 404 "not found"."""
 
     def get(client: TestClient, **params: int | str) -> int:
         return client.get("/v1/properties", params=params).status_code
@@ -91,6 +91,9 @@ async def test_catalog_filters_reject_nonsense(committed_conn) -> None:
             "offset=int8 max+1": get(client, offset=2**63),
             "q too long": get(client, q="a" * 101),
             "q ok": get(client, q="a" * 100),
+            "q NUL": get(client, q="a\x00b"),
+            "city NUL": get(client, city="a\x00b"),
+            "city ok": get(client, city="Коктебель"),
         }
 
     assert statuses == {
@@ -103,6 +106,9 @@ async def test_catalog_filters_reject_nonsense(committed_conn) -> None:
         "offset=int8 max+1": 422,
         "q too long": 422,
         "q ok": 200,
+        "q NUL": 422,
+        "city NUL": 422,
+        "city ok": 200,
     }
 
 
