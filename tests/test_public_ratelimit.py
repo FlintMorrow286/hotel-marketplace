@@ -9,7 +9,9 @@ relaxed (see conftest.py).
 
 from __future__ import annotations
 
+import itertools
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -18,7 +20,8 @@ from app.config.settings import settings
 from app.main import create_app
 from app.modules.auth import service as auth_service
 from app.modules.auth.schemas import PartnerRegisterRequest
-from app.utils.ratelimit_http import SUBJECT_FACTOR
+from app.utils import ratelimit
+from app.utils.ratelimit_http import SUBJECT_FACTOR, enforce
 
 
 class _ClientAddress:
@@ -152,3 +155,104 @@ async def test_booking_lookup_is_limited_per_address_and_per_code(committed_conn
 
     assert by_address == [404] * tight + [429]
     assert by_code == [404] * ceiling + [429]
+
+
+def _spellings(text: str, swaps: dict[str, str]) -> list[str]:
+    """Every way to write `text` with each letter of `swaps` plain or swapped."""
+    options = [(c, swaps[c]) if c in swaps else (c,) for c in text]
+    return ["".join(parts) for parts in itertools.product(*options)]
+
+
+@pytest.mark.asyncio
+async def test_account_ceiling_holds_across_spellings_the_database_treats_as_one(
+    committed_conn, tight
+) -> None:
+    """`citext` lowercases `İ` to `i`, so `İvan@` logs in to the account `ivan@`. A bucket
+    keyed by the spelling gave each one its own ceiling: a guess spread over addresses could
+    spread over spellings too and never meet it."""
+    email = f"iiiii-{uuid.uuid4().hex[:8]}@example.com"
+    ceiling = tight * SUBJECT_FACTOR
+    same = [
+        spelling
+        for spelling in _spellings(email, {"i": "İ"})
+        if await committed_conn.fetchval("SELECT $1::citext = $2::citext", spelling, email)
+    ]
+    if len(same) <= ceiling:
+        pytest.skip("this database does not treat these spellings as one account")
+
+    with TestClient(_ClientAddress(create_app())) as client:
+        statuses = [_login(client, _fresh_ip(), spelling).status_code for spelling in same]
+        elsewhere = _login(client, _fresh_ip(), _email()).status_code
+
+    assert statuses[: ceiling + 1] == [401] * ceiling + [429]
+    assert elsewhere == 401  # another account is not caught by it
+
+
+@pytest.mark.asyncio
+async def test_code_ceiling_holds_across_spellings_the_database_treats_as_one(
+    committed_conn, tight
+) -> None:
+    """The lookup compares `UPPER(code)`, which turns `ſ` (long s) into `S`. The booking code
+    alphabet has an S, so a code can be asked for under many spellings."""
+    code = f"BK-SSSS{uuid.uuid4().hex[:12].upper()}"
+    ceiling = tight * SUBJECT_FACTOR
+    same = [
+        spelling
+        for spelling in _spellings(code, {"S": "ſ"})
+        if await committed_conn.fetchval("SELECT upper($1::text) = $2::text", spelling, code)
+    ]
+    if len(same) <= ceiling:
+        pytest.skip("this database does not treat these spellings as one code")
+
+    def lookup(client: TestClient, spelling: str) -> int:
+        return _post(
+            client,
+            "/v1/bookings/lookup",
+            {"code": spelling, "email": "nobody@example.com"},
+            _fresh_ip(),
+        ).status_code
+
+    with TestClient(_ClientAddress(create_app())) as client:
+        statuses = [lookup(client, spelling) for spelling in same]
+
+    assert statuses[: ceiling + 1] == [404] * ceiling + [429]
+
+
+class _DownRedis:
+    def __init__(self) -> None:
+        self.keys: list[str] = []
+
+    async def eval(self, script, numkeys, key, *args):
+        self.keys.append(key)
+        raise ConnectionError("redis is down")
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, dict]] = []
+
+    def debug(self, event: str, **fields) -> None:
+        self.records.append((event, fields))
+
+    info = warning = debug
+
+
+@pytest.mark.asyncio
+async def test_the_limiter_keeps_the_email_and_the_code_out_of_redis_and_the_log(
+    monkeypatch,
+) -> None:
+    """The bucket key reaches Redis and, when Redis is down, the limiter's warning."""
+    redis, log = _DownRedis(), _Recorder()
+    monkeypatch.setattr(ratelimit, "get_redis", lambda: redis)
+    monkeypatch.setattr(ratelimit, "log", log)
+    request = SimpleNamespace(client=SimpleNamespace(host="203.0.113.9"))
+    email, code = "guest.private@example.com", "BK-PRIVAT"
+
+    await enforce(request, "login-account", 5, subject=email)
+    await enforce(request, "login-account", 5, subject=email.upper())
+    await enforce(request, "lookup-code", 5, subject=code)
+
+    assert [event for event, _ in log.records].count("ratelimit-failed-open") == 3
+    seen = " ".join(redis.keys) + repr(log.records)
+    assert "private" not in seen.lower() and "privat" not in seen.lower()
+    assert redis.keys[0] == redis.keys[1] != redis.keys[2]  # same account, same bucket

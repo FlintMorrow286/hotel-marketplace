@@ -19,6 +19,9 @@ bounding a guess spread over many addresses.
 
 from __future__ import annotations
 
+import hashlib
+import unicodedata
+
 from fastapi import HTTPException, Request, status
 
 from app.config.settings import settings
@@ -33,12 +36,28 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _subject_key(subject: str) -> str:
+    """The bucket key for an account email or a booking code.
+
+    Postgres treats more strings as one account or code than `.lower()` does: `citext` turns
+    `İ` into `i`, and `UPPER` turns `ı` and `ſ` into `I` and `S`. A key built from the raw
+    text gave each spelling its own bucket, so a guess could spread over spellings and never
+    meet the ceiling. They are folded together here; lookalikes sharing a bucket is harmless.
+
+    It is hashed, so the email or code is not left in Redis, nor in the limiter's warning
+    when Redis is down.
+    """
+    folded = unicodedata.normalize("NFKD", subject.casefold())
+    plain = "".join(c for c in folded if not unicodedata.combining(c)).replace("ı", "i")
+    return hashlib.sha256(plain.encode()).hexdigest()[:32]
+
+
 async def enforce(request: Request, bucket: str, limit: int, *, subject: str | None = None) -> None:
     """Count one attempt; answer 429 once `limit` is passed within the window.
 
     Keyed by the client address, or by `subject` (an email, a booking code).
     """
-    key = f"rl:{bucket}:{subject.lower() if subject else client_ip(request)}"
+    key = f"rl:{bucket}:{_subject_key(subject) if subject else client_ip(request)}"
     allowed, retry_after = await ratelimit.acquire(key, limit, settings.rate_limit_window_sec)
     if not allowed:
         raise HTTPException(
