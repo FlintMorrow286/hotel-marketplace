@@ -223,19 +223,21 @@ async def list_public_properties(
         # never ran for that room, so it is not bookable, and the catalog
         # must not offer it. This mirrors inventory.get_availability, which
         # treats a missing day as unavailable.
-        args.append(date_from)
-        args.append(date_to)
-        nights_start = len(args) - 1
+        # (unit_type, date) is the key, so "every night has such a row" is "as many
+        # such rows as nights". A night generated per day of the range cost whatever a
+        # client sent: year 1 to 9999 took two seconds, and `date_from=0001-01-01`
+        # (asyncpg sends date.min as -infinity) never finished, filling the disk with
+        # temp files. The nights are counted here: infinite dates cannot be subtracted.
+        nights = (date_to - date_from).days
+        args += [date_from, date_to, nights]
+        first, last, count = len(args) - 2, len(args) - 1, len(args)
         where += (
             f" AND EXISTS (SELECT 1 FROM unit_type ut"
             f" WHERE ut.property_id = p.id"
-            f" AND NOT EXISTS (SELECT g.d::date AS night FROM generate_series"
-            f"  (${nights_start}::date, (${nights_start + 1}::date - interval '1 day'),"
-            f"   interval '1 day') AS g(d)"
-            f"  WHERE NOT EXISTS (SELECT 1 FROM inventory_day i"
-            f"   WHERE i.unit_type_id = ut.id AND i.date = g.d::date"
-            f"     AND NOT i.closed"
-            f"     AND i.available - i.hold - i.sold > 0)))"
+            f" AND (SELECT count(*) FROM inventory_day i"
+            f"  WHERE i.unit_type_id = ut.id AND i.date >= ${first} AND i.date < ${last}"
+            f"    AND NOT i.closed AND i.available - i.hold - i.sold > 0)"
+            f"  = ${count})"
         )
     if amenities:
         # Only known keys can be in the column (the write path normalises),

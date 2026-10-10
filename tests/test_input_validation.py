@@ -2,7 +2,9 @@
 
 `guests=0` is not a party, `%` and `_` in the search box acted as LIKE
 wildcards, a stay that does not run forward answered "dates not available"
-instead of "bad request", and the availability read took a ten-year range.
+instead of "bad request", the availability read took a ten-year range, an
+integer past its column's type answered 404, and the catalog's date filter cost
+a night per day of whatever range it was sent.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from starlette.testclient import TestClient
 from app.main import create_app
 from app.modules.auth import service as auth_service
 from app.modules.auth.schemas import PartnerRegisterRequest
+from app.modules.inventory import service as inventory_service
 from app.modules.property import service as property_service
 from app.modules.property.schemas import PropertyCreate, PropertyUpdate
 
@@ -30,6 +33,21 @@ async def _published(conn, partner_id: str, name: str):
         conn, prop.id, partner_id, PropertyUpdate(status="published")
     )
     return prop
+
+
+async def _published_with_room(conn, email: str) -> str:
+    """A published property with one bookable room; returns the room's id."""
+    partner_id = await auth_service.register_partner(
+        conn, PartnerRegisterRequest(email=email, password="secret123", name="Tester")
+    )
+    prop = await _published(conn, partner_id, "Alpha")
+    unit_id = await conn.fetchval(
+        "INSERT INTO unit_type (property_id, name, capacity, total_units, base_price) "
+        "VALUES ($1, 'Стандарт', 2, 1, 5000) RETURNING id::text",
+        prop.id,
+    )
+    await inventory_service.ensure_inventory(conn, unit_id)
+    return unit_id
 
 
 @pytest.mark.asyncio
@@ -56,19 +74,33 @@ async def test_search_text_is_not_a_like_pattern(db_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_catalog_filters_reject_nonsense(committed_conn) -> None:
+    """Past its column's integer type a value reached the database, asyncpg raised
+    DataError and the uuid handler answered it as a 404 "not found"."""
+
+    def get(client: TestClient, **params: int | str) -> int:
+        return client.get("/v1/properties", params=params).status_code
+
     with TestClient(create_app()) as client:
         statuses = {
-            "guests=0": client.get("/v1/properties", params={"guests": 0}).status_code,
-            "guests=-3": client.get("/v1/properties", params={"guests": -3}).status_code,
-            "guests=2": client.get("/v1/properties", params={"guests": 2}).status_code,
-            "q too long": client.get("/v1/properties", params={"q": "a" * 101}).status_code,
-            "q ok": client.get("/v1/properties", params={"q": "a" * 100}).status_code,
+            "guests=0": get(client, guests=0),
+            "guests=-3": get(client, guests=-3),
+            "guests=2": get(client, guests=2),
+            "guests=int4 max": get(client, guests=2**31 - 1),
+            "guests=int4 max+1": get(client, guests=2**31),
+            "offset=int8 max": get(client, offset=2**63 - 1),
+            "offset=int8 max+1": get(client, offset=2**63),
+            "q too long": get(client, q="a" * 101),
+            "q ok": get(client, q="a" * 100),
         }
 
     assert statuses == {
         "guests=0": 422,
         "guests=-3": 422,
         "guests=2": 200,
+        "guests=int4 max": 200,
+        "guests=int4 max+1": 422,
+        "offset=int8 max": 200,
+        "offset=int8 max+1": 422,
         "q too long": 422,
         "q ok": 200,
     }
@@ -121,3 +153,55 @@ async def test_availability_range_is_capped(committed_conn) -> None:
     assert within.status_code == 200, within.text
     assert too_long.status_code == 422 and "limited to 366 days" in too_long.text
     assert ten_years.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_date_filter_answers_at_the_edges(db_conn) -> None:
+    """A stay matches only when every night has an open, unsold row; the checkout day
+    is not a night."""
+    unit_id = await _published_with_room(db_conn, "edges@example.com")
+    last = await db_conn.fetchval(
+        "SELECT max(date) FROM inventory_day WHERE unit_type_id = $1", unit_id
+    )
+    day = dt.timedelta(days=1)
+
+    async def matches(first: dt.date, checkout: dt.date) -> bool:
+        page = await property_service.list_public_properties(
+            db_conn, date_from=first, date_to=checkout
+        )
+        return page["total"] == 1
+
+    start = TODAY + 20 * day
+    assert await matches(start, start + 3 * day)
+    # The checkout day may be the one past the last generated night ...
+    assert await matches(last - day, last + day)
+    # ... but one more night has no row, so the room cannot be booked for it.
+    assert not await matches(last - day, last + 2 * day)
+
+    await db_conn.execute(
+        "UPDATE inventory_day SET sold = available WHERE unit_type_id = $1 AND date = $2",
+        unit_id,
+        start + day,
+    )
+    assert not await matches(start, start + 3 * day)
+    assert await matches(start + 2 * day, start + 5 * day)
+
+
+@pytest.mark.asyncio
+async def test_date_filter_costs_the_rows_it_reads_not_the_length_of_the_range(db_conn) -> None:
+    """A stay from year 1 to year 9999 used to generate a night per day of it: about two
+    seconds of database time per request. asyncpg sends `date.min` and `date.max` as
+    -infinity and infinity, and a series from -infinity never ended."""
+    await _published_with_room(db_conn, "cost@example.com")
+
+    await db_conn.execute("SET LOCAL statement_timeout = '400ms'")
+    for date_from, date_to in (
+        (dt.date(1, 1, 2), dt.date(9999, 12, 30)),
+        (dt.date.min, dt.date(2030, 1, 1)),
+        (TODAY, dt.date.max),
+        (dt.date.min, dt.date.max),
+    ):
+        page = await property_service.list_public_properties(
+            db_conn, date_from=date_from, date_to=date_to
+        )
+        assert page["total"] == 0, (date_from, date_to)

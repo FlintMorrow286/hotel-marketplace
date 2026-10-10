@@ -19,6 +19,11 @@ from app.modules.property.unit_type_routes import UnitTypeOut
 
 router = APIRouter(prefix="/v1", tags=["property"])
 
+# `guests` is compared with an int4 column and `offset` is a bigint. Past the type
+# asyncpg raises DataError, which uuid_http answers as a 404 "not found".
+INT4_MAX = 2**31 - 1
+INT8_MAX = 2**63 - 1
+
 
 async def _partner_conn(token: Annotated[TokenData, Depends(require_scope("partner"))]):
     """Acquire a DB connection scoped to the authenticated partner."""
@@ -86,13 +91,13 @@ class PropertyPage(BaseModel):
 @router.get("/properties", response_model=PropertyPage)
 async def list_public_properties(
     city: str | None = None,
-    guests: Annotated[int | None, Query(ge=1)] = None,
+    guests: Annotated[int | None, Query(ge=1, le=INT4_MAX)] = None,
     q: Annotated[str | None, Query(max_length=100)] = None,
     date_from: dt.date | None = Query(default=None),
     date_to: dt.date | None = Query(default=None),
     amenities: list[str] | None = Query(default=None),
     limit: Annotated[int, Query(ge=1, le=100)] = 24,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=INT8_MAX)] = 0,
 ) -> PropertyPage:
     """Public catalog — only published properties, no partner-internal fields.
 
