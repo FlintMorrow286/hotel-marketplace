@@ -6,6 +6,7 @@ first login or the first payment.
 
 from __future__ import annotations
 
+import ipaddress
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
@@ -23,7 +24,7 @@ IMPLEMENTED_PAYMENT_MODES = {PaymentMode.STUB, PaymentMode.DELAYED_STUB, Payment
 # Modes that exist to exercise the code: delayed_stub waits, fail always fails.
 TEST_ONLY_PAYMENT_MODES = {PaymentMode.DELAYED_STUB, PaymentMode.FAIL}
 
-_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+_LOCAL_SUFFIXES = ("localhost", "local", "internal")
 
 
 class ConfigError(RuntimeError):
@@ -36,6 +37,29 @@ def _is_fernet_key(value: str) -> bool:
     except (ValueError, TypeError):
         return False
     return True
+
+
+def _is_nonpublic_host(host: str | None) -> bool:
+    if not host:
+        return True
+    normalized = host.rstrip(".").casefold()
+    if not normalized or any(
+        normalized == suffix or normalized.endswith(f".{suffix}") for suffix in _LOCAL_SUFFIXES
+    ):
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    return any(
+        (
+            address.is_loopback,
+            address.is_private,
+            address.is_link_local,
+            address.is_unspecified,
+            address.is_reserved,
+        )
+    )
 
 
 def production_problems(s: Settings) -> list[str]:
@@ -71,8 +95,12 @@ def production_problems(s: Settings) -> list[str]:
         problems.append(f"WEBHOOK_SEAL_KEY must be a valid Fernet key {where}")
     if s.webhook_seal_key_previous and not _is_fernet_key(s.webhook_seal_key_previous):
         problems.append(f"WEBHOOK_SEAL_KEY_PREVIOUS is set but is not a valid Fernet key {where}")
-    base = urlsplit(s.app_base_url)
-    if base.scheme != "https" or (base.hostname or "") in _LOCAL_HOSTS:
+    try:
+        base = urlsplit(s.app_base_url)
+        invalid_base_url = base.scheme != "https" or _is_nonpublic_host(base.hostname)
+    except ValueError:
+        invalid_base_url = True
+    if invalid_base_url:
         problems.append(
             f"APP_BASE_URL must be the public https address {where}: partners are handed "
             f"iCal feed URLs built from it (got {s.app_base_url!r})"
