@@ -62,7 +62,7 @@ export function ChessBoard({ propertyId }: { propertyId: string }) {
   return (
     <div className="space-y-4">
       <Legend />
-      <div className="overflow-hidden rounded-xl border border-border-default bg-surface-card">
+      <div className="contain-paint overflow-hidden rounded-xl border border-border-default bg-surface-card">
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-sm">
             <caption className="sr-only">

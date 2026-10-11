@@ -141,7 +141,7 @@ export function MyBookingPage() {
 
       <p className="mt-10 text-sm text-text-tertiary">
         Не помните код?{" "}
-        <Link to="/search" className="underline underline-offset-[3px]">
+        <Link to="/search" className="inline-flex min-h-10 items-center underline underline-offset-[3px]">
           Подберите жильё заново
         </Link>
         .

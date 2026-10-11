@@ -120,7 +120,7 @@ export function RegisterPage() {
 
       <p className="mt-6 text-center text-xs text-text-secondary">
         Уже есть аккаунт?{" "}
-        <Link to="/login" className="text-text-link hover:text-text-link-hover">
+        <Link to="/login" className="inline-flex min-h-10 items-center px-2 text-text-link hover:text-text-link-hover">
           Войти
         </Link>
       </p>

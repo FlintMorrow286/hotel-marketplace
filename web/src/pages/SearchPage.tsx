@@ -200,7 +200,7 @@ export function SearchPage() {
                   resetPage();
                 }}
                 className={cn(
-                  "inline-flex items-center rounded-full border px-4 py-2 text-sm transition-colors duration-micro",
+                  "inline-flex min-h-10 items-center rounded-full border px-4 py-2 text-sm transition-colors duration-micro",
                   on
                     ? "border-border-strong bg-surface-sunken text-text-primary"
                     : "border-border-default bg-surface-card text-text-secondary hover:bg-interactive-hover",
@@ -277,7 +277,7 @@ export function SearchPage() {
                   </p>
                   <Link
                     to={`/property/${property.id}`}
-                    className="mt-5 inline-flex w-fit items-center text-sm font-medium text-text-primary underline-offset-[3px] transition-colors duration-micro hover:underline"
+                    className="mt-5 inline-flex min-h-10 w-fit items-center text-sm font-medium text-text-primary underline-offset-[3px] transition-colors duration-micro hover:underline"
                   >
                     Подробнее
                   </Link>

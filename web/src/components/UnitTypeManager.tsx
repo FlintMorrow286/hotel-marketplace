@@ -162,7 +162,7 @@ function UnitTypePrice({
         setDraft(unit.base_price ?? 0);
         setEditing(true);
       }}
-      className="shrink-0 text-sm font-medium text-text-primary underline-offset-[3px] transition-colors duration-micro hover:underline"
+      className="inline-flex min-h-10 shrink-0 items-center text-sm font-medium text-text-primary underline-offset-[3px] transition-colors duration-micro hover:underline"
     >
       {unit.base_price ? `${unit.base_price} ₽ за ночь` : "Цена не задана"}
     </button>

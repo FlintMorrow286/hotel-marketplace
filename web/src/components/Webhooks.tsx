@@ -97,7 +97,7 @@ function WebhookRow({ webhook }: { webhook: WebhookRowProps }) {
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <Webhook className="size-4 shrink-0 text-text-tertiary" aria-hidden="true" />
-          <p className="truncate font-mono text-sm">{webhook.url}</p>
+          <p className="min-w-0 break-all font-mono text-sm">{webhook.url}</p>
         </div>
         <div className="mt-2 flex flex-wrap gap-1">
           {types.map((label) => (
@@ -248,7 +248,7 @@ function CreateWebhookButton() {
                   />
                   <span>{type === "*" ? "Все события" : EVENT_LABELS[type]}</span>
                   {type !== "*" ? (
-                    <span className="font-mono text-xs text-text-tertiary">
+                    <span className="break-all font-mono text-xs text-text-tertiary">
                       {type}
                     </span>
                   ) : null}

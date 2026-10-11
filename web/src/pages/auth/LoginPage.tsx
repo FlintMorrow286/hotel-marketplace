@@ -117,7 +117,7 @@ export function LoginPage() {
       ) : null}
       <p className="mt-3 text-center text-xs text-text-secondary">
         Нет аккаунта?{" "}
-        <Link to="/register" className="text-text-link hover:text-text-link-hover">
+        <Link to="/register" className="inline-flex min-h-10 items-center text-text-link hover:text-text-link-hover">
           Зарегистрироваться
         </Link>
       </p>
