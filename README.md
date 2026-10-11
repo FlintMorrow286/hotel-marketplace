@@ -150,6 +150,14 @@ WebSocket (FastAPI) для live-обновления шахматки.
 
 ---
 
+## Run with Docker
+
+Скопируйте .env.example в .env, задайте сгенерированные значения для JWT_SECRET, WEBHOOK_SEAL_KEY и POSTGRES_PASSWORD, затем запустите docker compose up --build -d. Настройки прокси и резервного копирования описаны в docs/DEPLOY.md.
+
+## Dev services without Docker
+
+Запустите bash scripts/dev_services.sh: скрипт поднимет локальные PostgreSQL и Redis и создаст роль/базу из DATABASE_URL. Затем запустите API командой uv run uvicorn app.main:app --reload --port 8002, а фронтенд отдельно из каталога web/ командой npm run dev.
+
 ## 📌 Статус
 
 - ✅ Блюпринт архитектуры готов (`docs/ARCHITECTURE.md`)

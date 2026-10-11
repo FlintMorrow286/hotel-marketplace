@@ -1,0 +1,86 @@
+x-backend-environment: &backend-environment
+  APP_ENV: production
+  APP_HOST: 0.0.0.0
+  APP_PORT: "8000"
+  APP_BASE_URL: "${APP_BASE_URL:-http://localhost:8000}"
+  LOG_LEVEL: "${LOG_LEVEL:-info}"
+  DATABASE_URL: "postgresql://${POSTGRES_USER:-hotel_user}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-hotel_mp}"
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env}"
+  WEBHOOK_SEAL_KEY: "${WEBHOOK_SEAL_KEY:?Set WEBHOOK_SEAL_KEY in .env}"
+  WEBHOOK_SEAL_KEY_PREVIOUS: "${WEBHOOK_SEAL_KEY_PREVIOUS:-}"
+  MEDIA_DIR: /app/media
+  FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
+
+x-backend: &backend
+  build:
+    context: .
+  image: hotel-marketplace:local
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - >-
+        import os, urllib.request; urllib.request.urlopen(
+        'http://127.0.0.1:' + os.getenv('APP_PORT', '8000') + '/readyz',
+        timeout=3).read()
+    interval: 30s
+    timeout: 5s
+    start_period: 60s
+    retries: 3
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-hotel_user}"
+      POSTGRES_DB: "${POSTGRES_DB:-hotel_mp}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  app:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      RUN_BACKGROUND_JOBS: "false"
+      WEB_CONCURRENCY: "${WEB_CONCURRENCY:-2}"
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      - media_data:/app/media
+
+  jobs:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      RUN_BACKGROUND_JOBS: "true"
+      WEB_CONCURRENCY: "1"
+
+volumes:
+  postgres_data:
+  media_data:
