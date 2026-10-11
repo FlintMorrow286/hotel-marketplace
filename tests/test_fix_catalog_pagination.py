@@ -14,7 +14,10 @@ from app.modules.property.schemas import PropertyCreate
 @pytest.mark.asyncio
 async def test_catalog_pages_tied_created_at_rows_in_id_order(db_conn) -> None:
     partner_id = await auth_service.register_partner(
-        db_conn, PartnerRegisterRequest(email="fix-pagination@example.com", password="secret123", name="Tester")
+        db_conn,
+        PartnerRegisterRequest(
+            email="fix-pagination@example.com", password="secret123", name="Tester"
+        ),
     )
     tied_at = dt.datetime(2025, 1, 1, tzinfo=dt.UTC)
     expected_ids = [str(uuid.UUID(int=1)), str(uuid.UUID(int=2))]
@@ -32,9 +35,9 @@ async def test_catalog_pages_tied_created_at_rows_in_id_order(db_conn) -> None:
             tied_at,
         )
 
-    assert await db_conn.fetchval(
-        "SELECT count(*) FROM property WHERE created_at = $1", tied_at
-    ) == 2
+    assert (
+        await db_conn.fetchval("SELECT count(*) FROM property WHERE created_at = $1", tied_at) == 2
+    )
     first = await property_service.list_public_properties(db_conn, limit=1, offset=0)
     second = await property_service.list_public_properties(db_conn, limit=1, offset=1)
 

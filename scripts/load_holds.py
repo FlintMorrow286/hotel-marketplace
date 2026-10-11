@@ -42,13 +42,18 @@ async def _seed(conn: asyncpg.Connection, units: int, nights: int) -> tuple[str,
         tag = uuid.uuid4().hex[:8]
         partner_id = await auth_service.register_partner(
             conn,
-            PartnerRegisterRequest(email=f"load-{tag}@example.com", password="load-test-1", name="Load"),
+            PartnerRegisterRequest(
+                email=f"load-{tag}@example.com", password="load-test-1", name="Load"
+            ),
         )
         prop = await property_service.create_property(
             conn,
             partner_id,
             PropertyCreate(
-                name=f"Load {tag}", property_type="apartment", city="Yalta", timezone="Europe/Simferopol"
+                name=f"Load {tag}",
+                property_type="apartment",
+                city="Yalta",
+                timezone="Europe/Simferopol",
             ),
         )
         unit_type_id = await conn.fetchval(
@@ -68,25 +73,36 @@ async def _seed(conn: asyncpg.Connection, units: int, nights: int) -> tuple[str,
 
 
 async def _cleanup(conn: asyncpg.Connection, partner_id: str, property_id: str) -> None:
-    await conn.execute("DELETE FROM booking_line WHERE booking_id IN "
-                       "(SELECT id FROM booking WHERE property_id = $1)", property_id)
+    await conn.execute(
+        "DELETE FROM booking_line WHERE booking_id IN "
+        "(SELECT id FROM booking WHERE property_id = $1)",
+        property_id,
+    )
     await conn.execute("DELETE FROM outbox_event WHERE property_id = $1", property_id)
     await conn.execute("DELETE FROM booking WHERE property_id = $1", property_id)
-    await conn.execute("DELETE FROM inventory_day WHERE unit_type_id IN "
-                       "(SELECT id FROM unit_type WHERE property_id = $1)", property_id)
+    await conn.execute(
+        "DELETE FROM inventory_day WHERE unit_type_id IN "
+        "(SELECT id FROM unit_type WHERE property_id = $1)",
+        property_id,
+    )
     await conn.execute("DELETE FROM unit_type WHERE property_id = $1", property_id)
     await conn.execute("DELETE FROM property WHERE id = $1", property_id)
     await conn.execute("DELETE FROM partner WHERE id = $1", partner_id)
 
 
-async def _one(client: httpx.AsyncClient, unit_type_id: str, i: int, nights: int) -> tuple[int, float]:
+async def _one(
+    client: httpx.AsyncClient, unit_type_id: str, i: int, nights: int
+) -> tuple[int, float]:
     today = dt.date.today()
     body = {
         "unit_type_id": unit_type_id,
         "checkin": today.isoformat(),
         "checkout": (today + dt.timedelta(days=nights)).isoformat(),
-        "guest": {"name": f"Guest {i}", "email": f"guest{i}-{uuid.uuid4().hex[:6]}@example.com",
-                  "phone": "+79991234567"},
+        "guest": {
+            "name": f"Guest {i}",
+            "email": f"guest{i}-{uuid.uuid4().hex[:6]}@example.com",
+            "phone": "+79991234567",
+        },
     }
     started = time.perf_counter()
     response = await client.post(
@@ -124,20 +140,28 @@ async def main() -> int:
         latencies = [ms for _, ms in results]
         print(f"n={args.n} units={args.units} wall={wall:.2f}s")
         print("status codes:", dict(sorted(codes.items())))
-        print(f"latency ms: p50={_pct(latencies, .5):.0f} p95={_pct(latencies, .95):.0f} "
-              f"max={max(latencies):.0f}")
+        print(
+            f"latency ms: p50={_pct(latencies, 0.5):.0f} p95={_pct(latencies, 0.95):.0f} "
+            f"max={max(latencies):.0f}"
+        )
 
         created = codes.get(201, 0)
         rows = await conn.fetch(
             "SELECT hold, sold, available FROM inventory_day WHERE unit_type_id = $1 "
-            "AND date < current_date + $2::int ORDER BY date", unit_type_id, args.nights)
+            "AND date < current_date + $2::int ORDER BY date",
+            unit_type_id,
+            args.nights,
+        )
         bookings = await conn.fetchval(
-            "SELECT count(*) FROM booking WHERE unit_type_id = $1 AND status = 'hold'", unit_type_id)
+            "SELECT count(*) FROM booking WHERE unit_type_id = $1 AND status = 'hold'", unit_type_id
+        )
         expected = min(args.n, args.units)
         problems = []
         if any(r["hold"] != created or r["sold"] != 0 or r["hold"] > r["available"] for r in rows):
-            problems.append(f"inventory disagrees with {created} created holds: "
-                            f"{[(r['hold'], r['sold']) for r in rows]}")
+            problems.append(
+                f"inventory disagrees with {created} created holds: "
+                f"{[(r['hold'], r['sold']) for r in rows]}"
+            )
         if bookings != created:
             problems.append(f"{bookings} bookings in the database, {created} answered 201")
         if created != expected:

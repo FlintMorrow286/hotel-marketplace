@@ -62,15 +62,9 @@ def _patch_lifespan(monkeypatch, run_background_jobs: bool):
     monkeypatch.setattr(redis, "init_redis", init_redis)
     monkeypatch.setattr(redis, "close_redis", close_redis)
     monkeypatch.setattr(secrets, "seal_key_is_configured", lambda: True)
-    monkeypatch.setattr(
-        reaper, "reaper_loop", _idle_loop("reaper", started, stopped)
-    )
-    monkeypatch.setattr(
-        poller, "import_loop", _idle_loop("import", started, stopped)
-    )
-    monkeypatch.setattr(
-        retention, "retention_loop", _idle_loop("retention", started, stopped)
-    )
+    monkeypatch.setattr(reaper, "reaper_loop", _idle_loop("reaper", started, stopped))
+    monkeypatch.setattr(poller, "import_loop", _idle_loop("import", started, stopped))
+    monkeypatch.setattr(retention, "retention_loop", _idle_loop("retention", started, stopped))
     monkeypatch.setattr(worker, "outbox_loop", outbox_loop)
     monkeypatch.setattr(worker, "shard_groups", lambda: (0, 1))
     return started, stopped, closed

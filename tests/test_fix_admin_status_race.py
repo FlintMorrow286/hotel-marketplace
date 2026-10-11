@@ -38,7 +38,9 @@ class _StatusReadBarrier:
 async def test_admin_status_update_conflicts_after_a_stale_read(committed_conn) -> None:
     partner_id = await auth_service.register_partner(
         committed_conn,
-        PartnerRegisterRequest(email="fix-status-race@example.com", password="secret123", name="Tester"),
+        PartnerRegisterRequest(
+            email="fix-status-race@example.com", password="secret123", name="Tester"
+        ),
     )
     prop = await property_service.create_property(
         committed_conn, partner_id, PropertyCreate(name="Race property", property_type="hotel")
@@ -68,6 +70,7 @@ async def test_admin_status_update_conflicts_after_a_stale_read(committed_conn) 
     conflicted = [result for result in results if isinstance(result, ValueError)]
     assert len(succeeded) == 1
     assert len(conflicted) == 1
-    assert await committed_conn.fetchval(
-        "SELECT status FROM property WHERE id = $1", prop.id
-    ) == succeeded[0]["status"]
+    assert (
+        await committed_conn.fetchval("SELECT status FROM property WHERE id = $1", prop.id)
+        == succeeded[0]["status"]
+    )

@@ -61,9 +61,7 @@ async def test_an_action_without_the_token_is_refused(committed_conn, action) ->
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ACTIONS)
-async def test_the_token_of_another_booking_does_not_open_this_one(
-    committed_conn, action
-) -> None:
+async def test_the_token_of_another_booking_does_not_open_this_one(committed_conn, action) -> None:
     ut = await _seed_unit(committed_conn, f"acc-other-{action}@example.com", total_units=2)
 
     with TestClient(create_app()) as client:

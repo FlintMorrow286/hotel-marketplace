@@ -103,9 +103,7 @@ async def test_repeated_refund_cancel_returns_same_result_without_second_effect(
     booking = await _create_channel_booking(committed_conn, seed)
     tracker = _InventoryTracker(committed_conn)
 
-    first = await channel_service.cancel_channel_booking(
-        tracker, seed["partner_id"], booking["id"]
-    )
+    first = await channel_service.cancel_channel_booking(tracker, seed["partner_id"], booking["id"])
     second = await channel_service.cancel_channel_booking(
         tracker, seed["partner_id"], booking["id"]
     )
@@ -116,9 +114,12 @@ async def test_repeated_refund_cancel_returns_same_result_without_second_effect(
     assert provider.refund_calls == 1
     assert tracker.inventory_locks == 1
     assert tracker.inventory_updates == 1
-    assert await committed_conn.fetchval(
-        "SELECT sum(sold) FROM inventory_day WHERE unit_type_id = $1", seed["unit_type_id"]
-    ) == 0
+    assert (
+        await committed_conn.fetchval(
+            "SELECT sum(sold) FROM inventory_day WHERE unit_type_id = $1", seed["unit_type_id"]
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -137,12 +138,8 @@ async def test_repeated_hold_cancel_releases_inventory_once(committed_conn) -> N
         )
     tracker = _InventoryTracker(committed_conn)
 
-    first = await channel_service.cancel_channel_booking(
-        tracker, seed["partner_id"], hold["id"]
-    )
-    second = await channel_service.cancel_channel_booking(
-        tracker, seed["partner_id"], hold["id"]
-    )
+    first = await channel_service.cancel_channel_booking(tracker, seed["partner_id"], hold["id"])
+    second = await channel_service.cancel_channel_booking(tracker, seed["partner_id"], hold["id"])
 
     assert first == second == {"id": hold["id"], "status": "cancelled"}
     assert tracker.inventory_updates == 1

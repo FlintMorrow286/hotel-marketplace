@@ -13,7 +13,10 @@ from app.modules.property.schemas import PropertyCreate, PropertyUpdate
 @pytest.mark.asyncio
 async def test_catalog_prices_only_include_bookable_nights_and_active_rates(db_conn) -> None:
     partner_id = await auth_service.register_partner(
-        db_conn, PartnerRegisterRequest(email="fix-catalog-price@example.com", password="secret123", name="Tester")
+        db_conn,
+        PartnerRegisterRequest(
+            email="fix-catalog-price@example.com", password="secret123", name="Tester"
+        ),
     )
     prop = await property_service.create_property(
         db_conn, partner_id, PropertyCreate(name="Price property", property_type="hotel")

@@ -454,8 +454,7 @@ async def cancel_channel_booking(
             "checkin_date": booking["checkin_date"].isoformat(),
             "checkout_date": booking["checkout_date"].isoformat(),
             "lines": [
-                {"date": line["date"].isoformat(), "price": float(line["price"])}
-                for line in lines
+                {"date": line["date"].isoformat(), "price": float(line["price"])} for line in lines
             ],
             "free_cancelled": refunded_amount >= float(booking["total_amount"]),
             "refunded_amount": refunded_amount,

@@ -86,9 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 reason="aiogram is not installed (uv sync --extra bot)",
             )
         elif settings.telegram_bot_token:
-            background_tasks.append(
-                asyncio.create_task(bot_loop(settings.telegram_bot_token))
-            )
+            background_tasks.append(asyncio.create_task(bot_loop(settings.telegram_bot_token)))
         else:
             log.warning("telegram-bot-skipped", reason="TELEGRAM_BOT_TOKEN is not set")
     else:
