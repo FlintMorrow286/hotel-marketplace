@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     # Public origin used to build URLs handed to partners (iCal feeds, links).
     app_base_url: str = Field(default="http://localhost:8000")
     log_level: str = Field(default="info")
+    # Run in-process pollers only in the dedicated jobs process when scaling web workers.
+    run_background_jobs: bool = Field(default=True)
 
     # ----- Database -----
     database_url: str = "postgresql://hotel_user:hotel_pass@localhost:5432/hotel_mp"

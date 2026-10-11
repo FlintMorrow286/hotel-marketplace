@@ -58,45 +58,43 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env)
 
-    from app.jobs.reaper import reaper_loop
-    from app.modules.bot import bot_loop
-    from app.modules.outbox.retention import retention_loop
-    from app.modules.outbox.worker import outbox_loop, shard_groups
-    from app.modules.sync.poller import import_loop
     from app.utils.redis import close_redis
 
-    reaper_task = asyncio.create_task(reaper_loop())
-    import_task = asyncio.create_task(import_loop())
-    # One delivery loop per shard group: the outbox drains in parallel, and a
-    # partner's burst no longer sits in another partner's claim order.
-    outbox_tasks = [asyncio.create_task(outbox_loop(group)) for group in shard_groups()]
-    retention_task = asyncio.create_task(retention_loop())
-    # The bot is a notification channel, not a booking dependency: it runs only
-    # when a token exists, and its failure never stops the app.
-    bot_task = None
-    if settings.telegram_bot_token and importlib.util.find_spec("aiogram") is None:
-        log.error("telegram-bot-skipped", reason="aiogram is not installed (uv sync --extra bot)")
-    elif settings.telegram_bot_token:
-        bot_task = asyncio.create_task(bot_loop(settings.telegram_bot_token))
+    background_tasks: list[asyncio.Task] = []
+    if settings.run_background_jobs:
+        from app.jobs.reaper import reaper_loop
+        from app.modules.bot import bot_loop
+        from app.modules.outbox.retention import retention_loop
+        from app.modules.outbox.worker import outbox_loop, shard_groups
+        from app.modules.sync.poller import import_loop
+
+        background_tasks = [
+            asyncio.create_task(reaper_loop()),
+            asyncio.create_task(import_loop()),
+            *(asyncio.create_task(outbox_loop(group)) for group in shard_groups()),
+            asyncio.create_task(retention_loop()),
+        ]
+        # The bot is a notification channel, not a booking dependency.
+        if settings.telegram_bot_token and importlib.util.find_spec("aiogram") is None:
+            log.error(
+                "telegram-bot-skipped",
+                reason="aiogram is not installed (uv sync --extra bot)",
+            )
+        elif settings.telegram_bot_token:
+            background_tasks.append(
+                asyncio.create_task(bot_loop(settings.telegram_bot_token))
+            )
+        else:
+            log.warning("telegram-bot-skipped", reason="TELEGRAM_BOT_TOKEN is not set")
     else:
-        log.warning("telegram-bot-skipped", reason="TELEGRAM_BOT_TOKEN is not set")
+        log.info("background-jobs-skipped", reason="RUN_BACKGROUND_JOBS is false")
 
     yield
 
-    reaper_task.cancel()
-    import_task.cancel()
-    for task in outbox_tasks:
+    for task in background_tasks:
         task.cancel()
-    retention_task.cancel()
-    if bot_task is not None:
-        bot_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
-        await reaper_task
-        await import_task
-        await asyncio.gather(*outbox_tasks)
-        await retention_task
-        if bot_task is not None:
-            await bot_task
+        await asyncio.gather(*background_tasks)
 
     await close_redis()
     await close_pool()
