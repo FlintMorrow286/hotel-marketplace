@@ -114,6 +114,29 @@ test("guest who just paid can find the booking and cancel it in the same tab", a
   await expect.poll(async () => (await getBooking(request, bookingId)).status).toBe("refunded");
 });
 
+test("guest whose hold ended can book the same dates again", async ({ page, request }) => {
+  const fixture = await seedBookableProperty(request);
+  const firstId = await createHoldThroughUi(page, fixture);
+  expect((await getBooking(request, firstId)).status).toBe("hold");
+
+  // The hold ends (here: the guest's own cancellation, the same state the reaper leaves).
+  const token = await page.evaluate((id) => sessionStorage.getItem(`booking-token:${id}`), firstId);
+  expect(token).toBeTruthy();
+  const cancelled = await request.post(`/v1/bookings/${firstId}/cancel`, {
+    headers: { "X-Booking-Token": token! },
+  });
+  expect(cancelled.ok()).toBe(true);
+  expect((await getBooking(request, firstId)).status).toBe("cancelled");
+
+  // Same unit, dates and email: the SPA sends the same Idempotency-Key as before.
+  const secondId = await createHoldThroughUi(page, fixture);
+
+  expect(secondId).not.toBe(firstId);
+  expect((await getBooking(request, secondId)).status).toBe("hold");
+  await expect(page.getByRole("heading", { name: "Оплата брони" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Оплатить/ })).toBeEnabled();
+});
+
 function nextDate(fixture: { dates: { checkin: string; nights: number } }): string[] {
   return Array.from({ length: fixture.dates.nights - 1 }, (_, index) => {
     const date = new Date(`${fixture.dates.checkin}T00:00:00Z`);
