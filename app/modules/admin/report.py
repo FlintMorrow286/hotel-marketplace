@@ -1,7 +1,9 @@
 """Admin commission reports.
 
 Commission is snapshotted at confirmation time (booking.commission_amt) and
-marked 'accrued'. Refunds mark it 'void'. Reports therefore read committed
+marked 'accrued'. A free cancellation marks it 'void'; a late one keeps it,
+scaled to the share the partner keeps (booking.kept_amount), so `gross` is that
+share there and the whole total otherwise. Reports therefore read committed
 money, never recompute it from rules that may change later.
 """
 
@@ -32,7 +34,7 @@ async def commission_report(
         SELECT pt.id::text                 AS partner_id,
                pt.email                    AS partner_email,
                count(*)                    AS bookings,
-               coalesce(sum(b.total_amount), 0)::float8 AS gross,
+               coalesce(sum(coalesce(b.kept_amount, b.total_amount)), 0)::float8 AS gross,
                coalesce(sum(b.commission_amt), 0)::float8 AS commission
         FROM booking b
         JOIN property p  ON p.id = b.property_id
@@ -47,7 +49,7 @@ async def commission_report(
     grand = await conn.fetchrow(
         f"""
         SELECT count(*)::int                       AS bookings,
-               coalesce(sum(b.total_amount), 0)::float8 AS gross,
+               coalesce(sum(coalesce(b.kept_amount, b.total_amount)), 0)::float8 AS gross,
                coalesce(sum(b.commission_amt), 0)::float8 AS commission
         FROM booking b
         {where}

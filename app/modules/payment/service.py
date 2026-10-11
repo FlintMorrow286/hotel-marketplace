@@ -11,6 +11,7 @@ converting a hold can never race with a reaper or another guest.
 from __future__ import annotations
 
 import datetime as dt
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
@@ -18,7 +19,7 @@ from app.config import legal
 from app.db.pool import get_pool
 from app.db.tx import serializable, try_lock, unlock
 from app.modules.booking.service import BookingError
-from app.modules.payment.provider import PaymentResult, get_payment_provider
+from app.modules.payment.provider import PaymentProvider, PaymentResult, get_payment_provider
 from app.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -95,6 +96,12 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
             )
             raise PaymentError("payment failed")
 
+        # The money has moved. Write that down before anything else can fail, so a
+        # charge never exists without a row that says so.
+        await _record_payment(
+            conn, booking_id, provider.name, amount, "succeeded", result.external_id
+        )
+
         # --- confirm transactionally (re-run if Postgres aborts it for a conflict)
         async def _confirm() -> tuple[dict, asyncpg.Record]:
             locked = await conn.fetch(
@@ -140,10 +147,6 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
             if row is None:
                 raise PaymentError("booking changed state during payment")
 
-            await _record_payment(
-                conn, booking_id, provider.name, amount, "succeeded", result.external_id
-            )
-
             lines = await conn.fetch(
                 "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",
                 booking_id,
@@ -171,7 +174,20 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
 
             return await _row_to_out(row, lines), row
 
-        out, row = await serializable(conn, _confirm)
+        try:
+            out, row = await serializable(conn, _confirm)
+        except Exception as exc:
+            # The guest has paid but the booking is not confirmed: the hold was
+            # reaped during the provider call, or the transaction kept conflicting.
+            returned = await _give_back(conn, provider, booking_id, amount)
+            if isinstance(exc, PaymentError):
+                tail = (
+                    "your payment was returned"
+                    if returned
+                    else "your payment could not be returned automatically; support will refund it"
+                )
+                raise PaymentError(f"{exc}; {tail}") from exc
+            raise
         log.info("booking-confirmed", booking_id=booking_id, code=row["code"])
 
         # After the commit: a confirmation that rolls back or re-runs must not notify.
@@ -205,12 +221,47 @@ def _hold_still_valid(_conn: asyncpg.Connection, _booking: asyncpg.Record) -> bo
     return True
 
 
+def _today_at(tz_name: str) -> dt.date:
+    """The calendar date it is right now at the property."""
+    try:
+        zone = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo("UTC")
+    return dt.datetime.now(zone).date()
+
+
+async def _refund_on_record(conn: asyncpg.Connection, booking_id: str) -> asyncpg.Record | None:
+    """A provider refund made after the booking's last successful charge, if any.
+
+    A refund that predates the last charge belongs to an earlier, returned
+    payment (see `_give_back`), not to this one.
+    """
+    return await conn.fetchrow(
+        """
+        SELECT r.amount::float8 AS amount
+        FROM payment r
+        WHERE r.booking_id = $1
+          AND r.status = 'refunded'
+          AND r.created_at >= coalesce(
+                (SELECT max(created_at) FROM payment
+                  WHERE booking_id = $1 AND status = 'succeeded'),
+                '-infinity'::timestamptz)
+        ORDER BY r.created_at DESC
+        LIMIT 1
+        """,
+        booking_id,
+    )
+
+
 async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None) -> dict:
     """Refund a confirmed booking: sold -> free, status -> refunded.
 
     Cancellation rule: free if cancelled before 24:00 of the day before
-    check-in. Later, the penalty applies (see app.config.legal). This function
-    records the deadline it used so reports can be verified.
+    check-in, by the calendar of the property. Later, the penalty applies (see
+    app.config.legal): the partner keeps that share and the platform earns its
+    commission on it. The provider is paid back once: the refund is written down
+    before the booking changes, so a call that died in between is finished by
+    the next one instead of refunding again.
     """
     provider = get_payment_provider()
     pool = None
@@ -226,9 +277,11 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
 
         booking = await conn.fetchrow(
             """
-            SELECT id::text, code, status, total_amount::float8, checkin_date, checkout_date,
-                   unit_type_id::text, property_id::text
-            FROM booking WHERE id = $1
+            SELECT b.id::text, b.code, b.status, b.total_amount::float8, b.checkin_date,
+                   b.checkout_date, b.unit_type_id::text, b.property_id::text, p.timezone
+            FROM booking b
+            JOIN property p ON p.id = b.property_id
+            WHERE b.id = $1
             """,
             booking_id,
         )
@@ -240,18 +293,28 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
         deadline = booking["checkin_date"] - dt.timedelta(
             hours=legal.CANCELLATION_FREE_BEFORE_HOURS
         )
-        # checkin_date is a date; the free window ends at that date boundary.
-        is_free = dt.date.today() <= deadline
-
-        # A late cancellation keeps the penalty share; the rest goes back to
-        # the guest. The rate is a legal constant, not a technical default.
-        if is_free:
-            amount = booking["total_amount"]
+        earlier = await _refund_on_record(conn, booking_id)
+        if earlier is not None:
+            amount = earlier["amount"]
+            is_free = amount >= booking["total_amount"]
         else:
-            amount = round(booking["total_amount"] * (1 - legal.CANCELLATION_PENALTY_RATE), 2)
-        result = await provider.refund(booking_id, amount)
-        if result.status != "refunded":
-            raise PaymentError("refund failed")
+            # checkin_date is a date; the free window ends at that date boundary.
+            is_free = _today_at(booking["timezone"]) <= deadline
+            # A late cancellation keeps the penalty share; the rest goes back to
+            # the guest. The rate is a legal constant, not a technical default.
+            if is_free:
+                amount = booking["total_amount"]
+            else:
+                amount = round(
+                    booking["total_amount"] * (1 - legal.CANCELLATION_PENALTY_RATE), 2
+                )
+            result = await provider.refund(booking_id, amount)
+            if result.status != "refunded":
+                raise PaymentError("refund failed")
+            await _record_payment(
+                conn, booking_id, provider.name, amount, "refunded", result.external_id
+            )
+        kept = round(booking["total_amount"] - amount, 2)
 
         async def _refund() -> dict:
             locked = await conn.fetch(
@@ -273,15 +336,27 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
                 """,
                 [(booking["unit_type_id"], r["date"]) for r in locked],
             )
+            # The commission follows the money the partner keeps: all of it is
+            # void on a free cancellation, a share of it on a late one.
             row = await conn.fetchrow(
                 """
                 UPDATE booking
-                SET status = 'refunded', cancelled_at = now(), commission_status = 'void'
+                SET status = 'refunded',
+                    cancelled_at = now(),
+                    kept_amount = $2::numeric,
+                    commission_amt = CASE
+                        WHEN $3::boolean AND $2::numeric > 0
+                        THEN round(commission_amt * $2::numeric / NULLIF(total_amount, 0), 2)
+                        ELSE commission_amt END,
+                    commission_status = CASE
+                        WHEN $3::boolean AND $2::numeric > 0 THEN 'accrued' ELSE 'void' END
                 WHERE id = $1 AND status IN ('confirmed', 'paid')
                 RETURNING id::text, code, status, total_amount::float8,
                           paid_at, checkin_date, checkout_date
                 """,
                 booking_id,
+                kept,
+                legal.COMMISSION_ON_PENALTY,
             )
             if row is None:
                 raise PaymentError("booking changed state during refund")
@@ -303,9 +378,6 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
                     "free_cancelled": is_free,
                 },
                 property_id=booking["property_id"],
-            )
-            await _record_payment(
-                conn, booking_id, provider.name, amount, "refunded", result.external_id
             )
             lines = await conn.fetch(
                 "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",
@@ -331,6 +403,34 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
             await unlock(conn, "refund", booking_id)
         if pool is not None:
             await pool.release(conn)
+
+
+async def _give_back(
+    conn: asyncpg.Connection, provider: PaymentProvider, booking_id: str, amount: float
+) -> bool:
+    """Return a charge whose booking could not be confirmed. Never raises.
+
+    False means the money is still with us: the `succeeded` row written when the
+    charge went through has no `refunded` one after it, which is how it is found.
+    """
+    try:
+        result = await provider.refund(booking_id, amount)
+    except Exception as exc:
+        log.error("charge-not-returned", booking_id=booking_id, amount=amount, error=str(exc))
+        return False
+    if result.status != "refunded":
+        log.error(
+            "charge-not-returned", booking_id=booking_id, amount=amount, provider_said=result.status
+        )
+        return False
+    try:
+        await _record_payment(
+            conn, booking_id, provider.name, amount, "refunded", result.external_id
+        )
+    except Exception as exc:
+        log.error("charge-return-unrecorded", booking_id=booking_id, amount=amount, error=str(exc))
+    log.warning("charge-returned", booking_id=booking_id, amount=amount)
+    return True
 
 
 async def _record_payment(
