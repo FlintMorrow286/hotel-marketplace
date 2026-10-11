@@ -1,0 +1,84 @@
+import { expect, test } from "@playwright/test";
+
+import {
+  amountPattern,
+  appUrl,
+  getAvailability,
+  getBooking,
+  seedBookableProperty,
+  createHoldThroughUi,
+} from "./fixtures/api";
+
+test("guest can book, pay, look up, and cancel a stay", async ({ browser, page, request }, testInfo) => {
+  const fixture = await seedBookableProperty(request);
+  const bookingId = await createHoldThroughUi(page, fixture);
+
+  let booking = await getBooking(request, bookingId);
+  expect(booking.status).toBe("hold");
+  await expect(page.getByRole("heading", { name: "Оплата брони" })).toBeVisible();
+  await expect(page.getByText(booking.code, { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: new RegExp(`Оплатить\\s*${amountPattern(fixture.totalAmount).source}`),
+    }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: /Оплатить/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/booking/${bookingId}/success$`));
+  await expect(page.getByRole("heading", { name: "Бронь подтверждена" })).toBeVisible();
+  await expect(page.getByText(booking.code, { exact: true })).toBeVisible();
+
+  booking = await getBooking(request, bookingId);
+  expect(booking.status).toBe("confirmed");
+  let days = await getAvailability(request, fixture);
+  expect(days.map((day) => day.date)).toEqual([fixture.dates.checkin, ...nextDate(fixture)]);
+  expect(days.map((day) => day.free)).toEqual([1, 1]);
+
+  const mobile = testInfo.project.name === "mobile";
+  const lookupContext = await browser.newContext({
+    viewport: mobile ? { width: 412, height: 915 } : { width: 1280, height: 720 },
+    deviceScaleFactor: mobile ? 2.625 : 1,
+    isMobile: mobile,
+    hasTouch: mobile,
+  });
+  try {
+    const guestPage = await lookupContext.newPage();
+    await guestPage.goto(appUrl(`/booking/${bookingId}/success`));
+    await expect(guestPage.getByRole("heading", { name: "Бронь подтверждена" })).toBeVisible();
+    await expect(guestPage.getByText(booking.code, { exact: true })).toBeVisible();
+    await guestPage.getByRole("link", { name: "Найти бронь по коду" }).click();
+    await expect(guestPage.getByRole("heading", { name: "Найти мою бронь" })).toBeVisible();
+    await guestPage.getByLabel("Код брони").fill(booking.code);
+    await guestPage.getByLabel("Email").fill(fixture.guest.email);
+    await guestPage.getByRole("button", { name: "Найти" }).click();
+    await expect(guestPage.getByRole("heading", { name: "Подтверждена" })).toBeVisible();
+    await guestPage.getByRole("button", { name: "Открыть бронь" }).click();
+    await expect(guestPage).toHaveURL(new RegExp(`/booking/${bookingId}/success$`));
+
+    await guestPage.getByRole("button", { name: "Отменить бронь" }).click();
+    const dialog = guestPage.getByRole("dialog", { name: "Отменить бронь?" });
+    await expect(dialog).toContainText("даты освободятся для других гостей");
+    await dialog.getByRole("button", { name: "Да, отменить" }).click();
+    await expect(guestPage).toHaveURL(/\/$/);
+
+    await expect.poll(async () => (await getBooking(request, bookingId)).status).toBe("refunded");
+    days = await getAvailability(request, fixture);
+    expect(days.map((day) => day.free)).toEqual([fixture.totalUnits, fixture.totalUnits]);
+
+    await guestPage.goto(appUrl("/my-booking"));
+    await guestPage.getByLabel("Код брони").fill(booking.code);
+    await guestPage.getByLabel("Email").fill(fixture.guest.email);
+    await guestPage.getByRole("button", { name: "Найти" }).click();
+    await expect(guestPage.getByRole("heading", { name: "Возвращена" })).toBeVisible();
+  } finally {
+    await lookupContext.close();
+  }
+});
+
+function nextDate(fixture: { dates: { checkin: string; nights: number } }): string[] {
+  return Array.from({ length: fixture.dates.nights - 1 }, (_, index) => {
+    const date = new Date(`${fixture.dates.checkin}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + index + 1);
+    return date.toISOString().slice(0, 10);
+  });
+}

@@ -111,3 +111,100 @@ jobs:
       - name: Build
         working-directory: web
         run: npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: public.ecr.aws/docker/library/postgres:16
+        env:
+          POSTGRES_USER: hotel_user
+          POSTGRES_PASSWORD: hotel_pass
+          POSTGRES_DB: hotel_mp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: public.ecr.aws/docker/library/redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://hotel_user:hotel_pass@localhost:5432/hotel_mp
+      REDIS_URL: redis://localhost:6379/0
+      WEBHOOK_SEAL_KEY: ${{ secrets.WEBHOOK_SEAL_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }}
+      APP_ENV: local
+      APP_PORT: 8123
+      LOOKUP_LIMIT_PER_MIN: 1000
+      LOGIN_LIMIT_PER_MIN: 1000
+      REGISTER_LIMIT_PER_MIN: 1000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python dependencies
+        run: uv sync --extra bot
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Start API
+        run: |
+          nohup uv run python -m uvicorn app.main:app --host 127.0.0.1 --port 8123 > /tmp/e2e-api.log 2>&1 &
+          echo $! > /tmp/e2e-api.pid
+
+      - name: Wait for API readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8123/readyz > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/e2e-api.log
+          exit 1
+
+      - name: Run Playwright E2E
+        working-directory: web
+        env:
+          E2E_BASE_URL: http://127.0.0.1:8123
+        run: npm run e2e
+
+      - name: Upload E2E artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            web/playwright-report/
+            web/test-results/
+          if-no-files-found: ignore
