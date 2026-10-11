@@ -14,7 +14,7 @@ import asyncpg
 from app.modules.auth.jwt import create_access_token
 from app.modules.auth.schemas import LoginRequest, PartnerRegisterRequest
 from app.utils.logger import get_logger
-from app.utils.secrets import hash_secret, needs_rehash, verify_secret
+from app.utils.secrets import dummy_secret_hash, hash_secret, needs_rehash, verify_secret
 
 log = get_logger(__name__)
 
@@ -47,7 +47,10 @@ async def login(conn: asyncpg.Connection, data: LoginRequest) -> str:
     row = await conn.fetchrow(
         "SELECT id::text, password_hash FROM partner WHERE email = $1", data.email
     )
-    if row is None or not verify_secret(data.password, row["password_hash"]):
+    if row is None:
+        verify_secret(data.password, dummy_secret_hash())
+        raise ValueError("invalid credentials")
+    if not verify_secret(data.password, row["password_hash"]):
         raise ValueError("invalid credentials")
 
     if needs_rehash(row["password_hash"]):

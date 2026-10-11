@@ -13,7 +13,7 @@ import asyncpg
 
 from app.modules.auth.jwt import create_access_token
 from app.utils.logger import get_logger
-from app.utils.secrets import hash_secret, needs_rehash, verify_secret
+from app.utils.secrets import dummy_secret_hash, hash_secret, needs_rehash, verify_secret
 
 log = get_logger(__name__)
 
@@ -27,7 +27,10 @@ async def login_admin(conn: asyncpg.Connection, email: str, password: str) -> st
     login — staff does not get a forced reset either.
     """
     row = await conn.fetchrow("SELECT id::text, password_hash FROM admin WHERE email = $1", email)
-    if row is None or not verify_secret(password, row["password_hash"]):
+    if row is None:
+        verify_secret(password, dummy_secret_hash())
+        raise ValueError("invalid credentials")
+    if not verify_secret(password, row["password_hash"]):
         raise ValueError("invalid credentials")
 
     if needs_rehash(row["password_hash"]):
@@ -102,7 +105,7 @@ async def set_property_status(
 
     row = await conn.fetchrow(
         """
-        UPDATE property p SET status = $2 WHERE p.id = $1
+        UPDATE property p SET status = $2 WHERE p.id = $1 AND p.status = $3
         RETURNING p.id::text, p.name, p.property_type, p.city, p.status,
                   p.created_at,
                   (SELECT pt.email FROM partner pt WHERE pt.id = p.partner_id)
@@ -110,9 +113,13 @@ async def set_property_status(
         """,
         property_id,
         new_status,
+        current,
     )
     if row is None:
-        return None
+        latest = await conn.fetchval("SELECT status FROM property WHERE id = $1", property_id)
+        if latest is None:
+            return None
+        raise ValueError(f"concurrent status transition: {current} -> {latest}")
 
     from app.modules.outbox import service as outbox_service
 

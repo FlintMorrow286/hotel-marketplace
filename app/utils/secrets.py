@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError, VerifyMismatchError
@@ -44,6 +45,12 @@ _hasher = PasswordHasher(
     hash_len=32,
     salt_len=16,
 )
+_DUMMY_PASSWORD_HASH = _hasher.hash(base64.urlsafe_b64encode(os.urandom(32)).decode("ascii"))
+
+
+def dummy_secret_hash() -> str:
+    """Return the process-local Argon2 digest used for unknown accounts."""
+    return _DUMMY_PASSWORD_HASH
 
 
 def _is_legacy_digest(value: str) -> bool:
