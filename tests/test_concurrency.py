@@ -60,6 +60,11 @@ async def _seed_unit(conn: asyncpg.Connection, email: str, total_units: int = 1)
     return row["id"]
 
 
+def _as_guest(hold: dict) -> dict:
+    """The header that lets the holder of this booking pay for or cancel it."""
+    return {"X-Booking-Token": hold["access_token"]}
+
+
 def _hold_body(unit_type_id: str, i: int = 0) -> dict:
     return {
         "unit_type_id": unit_type_id,
@@ -142,7 +147,9 @@ async def test_replayed_hold_key_after_payment_is_not_a_500(committed_conn) -> N
 
     with TestClient(create_app()) as client:
         first = client.post("/v1/bookings/hold", json=_hold_body(ut), headers=headers)
-        paid = client.post(f"/v1/bookings/{first.json()['id']}/pay")
+        paid = client.post(
+            f"/v1/bookings/{first.json()['id']}/pay", headers=_as_guest(first.json())
+        )
         replay = client.post("/v1/bookings/hold", json=_hold_body(ut), headers=headers)
 
     assert (first.status_code, paid.status_code, replay.status_code) == (201, 200, 201)
@@ -161,8 +168,11 @@ async def test_parallel_payments_charge_the_provider_once(committed_conn, monkey
     ut = await _seed_unit(committed_conn, "conc-pay@example.com")
 
     with TestClient(create_app()) as client:
-        booking_id = client.post("/v1/bookings/hold", json=_hold_body(ut)).json()["id"]
-        responses = _race(5, lambda i: client.post(f"/v1/bookings/{booking_id}/pay"))
+        hold = client.post("/v1/bookings/hold", json=_hold_body(ut)).json()
+        booking_id = hold["id"]
+        responses = _race(
+            5, lambda i: client.post(f"/v1/bookings/{booking_id}/pay", headers=_as_guest(hold))
+        )
 
     assert sorted(r.status_code for r in responses) == [200, 409, 409, 409, 409]
     assert provider.pays == 1
@@ -186,9 +196,13 @@ async def test_parallel_refunds_refund_the_provider_once(committed_conn, monkeyp
     ut = await _seed_unit(committed_conn, "conc-refund@example.com")
 
     with TestClient(create_app()) as client:
-        booking_id = client.post("/v1/bookings/hold", json=_hold_body(ut)).json()["id"]
-        assert client.post(f"/v1/bookings/{booking_id}/pay").status_code == 200
-        responses = _race(5, lambda i: client.post(f"/v1/bookings/{booking_id}/refund"))
+        hold = client.post("/v1/bookings/hold", json=_hold_body(ut)).json()
+        booking_id = hold["id"]
+        guest = _as_guest(hold)
+        assert client.post(f"/v1/bookings/{booking_id}/pay", headers=guest).status_code == 200
+        responses = _race(
+            5, lambda i: client.post(f"/v1/bookings/{booking_id}/refund", headers=guest)
+        )
 
     assert sorted(r.status_code for r in responses) == [200, 409, 409, 409, 409]
     assert provider.refunds == 1

@@ -228,31 +228,67 @@ export const availability = {
 
 // ---- booking (guest flow) -------------------------------------------------
 
+// The token that pays for, cancels or refunds a booking. The booking id sits in
+// URLs and access logs, so it is not enough on its own. The token is kept for
+// the tab only: closing it drops the token, and the guest gets it back by
+// finding the booking with its code and email.
+const BOOKING_TOKEN_PREFIX = "booking-token:";
+const BOOKING_TOKEN_HEADER = "X-Booking-Token";
+
+function rememberBookingToken(booking: BookingOut): BookingOut {
+  if (booking.access_token) {
+    sessionStorage.setItem(
+      BOOKING_TOKEN_PREFIX + booking.id,
+      booking.access_token,
+    );
+  }
+  return booking;
+}
+
+function bookingTokenHeader(id: string): Record<string, string> {
+  const token = sessionStorage.getItem(BOOKING_TOKEN_PREFIX + id);
+  if (!token) throw new ApiException(403, "booking token missing");
+  return { [BOOKING_TOKEN_HEADER]: token };
+}
+
 export const bookings = {
-  hold: (payload: HoldRequest, idempotencyKey?: string) =>
-    request<BookingOut>("/bookings/hold", {
-      method: "POST",
-      body: payload,
-      headers: idempotencyKey
-        ? { "Idempotency-Key": idempotencyKey }
-        : undefined,
-    }),
+  hold: async (payload: HoldRequest, idempotencyKey?: string) =>
+    rememberBookingToken(
+      await request<BookingOut>("/bookings/hold", {
+        method: "POST",
+        body: payload,
+        headers: idempotencyKey
+          ? { "Idempotency-Key": idempotencyKey }
+          : undefined,
+      }),
+    ),
   get: (id: string, signal?: AbortSignal) =>
     request<BookingOut>(`/bookings/${id}`, { signal }),
-  // The code alone is not enough: the reply carries the id that cancels the
-  // booking, so the guest also proves the email it was made with. POST keeps
-  // that email out of URLs and access logs.
-  lookup: (code: string, email: string) =>
-    request<BookingOut>("/bookings/lookup", {
+  // The code alone is not enough: the reply carries the id and the token that
+  // cancel the booking, so the guest also proves the email it was made with.
+  // POST keeps that email out of URLs and access logs.
+  lookup: async (code: string, email: string) =>
+    rememberBookingToken(
+      await request<BookingOut>("/bookings/lookup", {
+        method: "POST",
+        body: { code, email },
+      }),
+    ),
+  pay: async (id: string) =>
+    request<BookingOut>(`/bookings/${id}/pay`, {
       method: "POST",
-      body: { code, email },
+      headers: bookingTokenHeader(id),
     }),
-  pay: (id: string) =>
-    request<BookingOut>(`/bookings/${id}/pay`, { method: "POST" }),
-  cancel: (id: string) =>
-    request<BookingOut>(`/bookings/${id}/cancel`, { method: "POST" }),
-  refund: (id: string) =>
-    request<BookingOut>(`/bookings/${id}/refund`, { method: "POST" }),
+  cancel: async (id: string) =>
+    request<BookingOut>(`/bookings/${id}/cancel`, {
+      method: "POST",
+      headers: bookingTokenHeader(id),
+    }),
+  refund: async (id: string) =>
+    request<BookingOut>(`/bookings/${id}/refund`, {
+      method: "POST",
+      headers: bookingTokenHeader(id),
+    }),
 };
 
 // ---- admin ----------------------------------------------------------------

@@ -187,6 +187,9 @@ export interface BookingLineOut {
 
 export interface BookingOut {
   id: string;
+  /** Pays for, cancels or refunds this booking. Only the hold and the lookup
+   * answer with it; the client keeps it for the tab (see api/client.ts). */
+  access_token?: string;
   code: string;
   status: BookingStatus;
   total_amount: number;

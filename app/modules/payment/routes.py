@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.db.pool import get_pool
+from app.modules.booking.access import require_token
 from app.modules.payment import service
 
 router = APIRouter(prefix="/v1/bookings", tags=["payment"])
 
 
-@router.post("/{booking_id}/pay")
+@router.post("/{booking_id}/pay", dependencies=[Depends(require_token)])
 async def pay_booking(booking_id: str) -> dict:
     """Charge the guest (stub in Phase 1) and confirm the booking instantly."""
     pool = get_pool()
@@ -36,7 +37,7 @@ async def pay_booking(booking_id: str) -> dict:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.post("/{booking_id}/refund")
+@router.post("/{booking_id}/refund", dependencies=[Depends(require_token)])
 async def refund_booking(booking_id: str) -> dict:
     """Refund a confirmed booking and return inventory to the pool."""
     try:

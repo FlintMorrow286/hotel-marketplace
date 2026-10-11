@@ -460,11 +460,13 @@ POST /bookings/hold (idempotency-key: <uuid> от клиента)
 | GET | `/properties/{id}` | public | Карточка + first available dates |
 | GET | `/availability` | public | `unit_type_id`, `from`, `to` → массив `{date, available, price, closed, min_stay}` |
 | GET | `/rate-plans/{id}/prices` | public | Цены по дням |
-| POST | `/bookings/hold` | guest | Body: `unit_type_id, checkin, checkout, guest{...}`; Header: `Idempotency-Key` → `booking` status=hold + `hold_expires_at` |
+| POST | `/bookings/hold` | guest | Body: `unit_type_id, checkin, checkout, guest{...}`; Header: `Idempotency-Key` → `booking` status=hold + `hold_expires_at` + `access_token` |
+| POST | `/bookings/lookup` | guest | `{code, email}` → бронь + `access_token`; код без email ничего не отдаёт |
 | POST | `/bookings/{id}/confirm` | guest | Подтверждение (manual flow: «оплатить позже»/счёт) или триггер эквайринга |
-| POST | `/bookings/{id}/pay` | guest | **Phase 1 — заглушка**: `PAYMENT_MODE=stub` мгновенно `succeeded` → `confirmed`. Потом — старт платёжной сессии эквайринга |
-| POST | `/bookings/{id}/cancel` | guest/partner | Отмена, возврат инвентаря |
-| GET | `/bookings/{id}` | guest/partner | Статус |
+| POST | `/bookings/{id}/pay` | guest + `X-Booking-Token` | **Phase 1 — заглушка**: `PAYMENT_MODE=stub` мгновенно `succeeded` → `confirmed`. Потом — старт платёжной сессии эквайринга |
+| POST | `/bookings/{id}/cancel` | guest + `X-Booking-Token` | Отмена холда, возврат инвентаря |
+| POST | `/bookings/{id}/refund` | guest + `X-Booking-Token` | Возврат подтверждённой брони: бесплатно до 24:00 накануне заезда по календарю объекта, позже — со штрафом (`app/config/legal.py`) |
+| GET | `/bookings/{id}` | public | Статус и даты (без контактов гостя и платёжных данных) |
 | PATCH | `/partner/properties/{id}` | partner | CRUD объекта |
 | PATCH | `/partner/unit-types/{id}` | partner | CRUD типа номера |
 | POST | `/partner/inventory/close` | partner | `{unit_type_id, from, to, closed}` |
@@ -476,6 +478,16 @@ POST /bookings/hold (idempotency-key: <uuid> от клиента)
 | GET | `/admin/partners` | admin | Модерация |
 | POST | `/admin/commission-rules` | admin | Комиссии |
 | GET | `/admin/reports/commission` | admin | Отчёт |
+
+
+**Токен брони.** UUID брони попадает в URL, access-логи и историю браузера, поэтому
+он не может разрешать действия с деньгами. `pay`, `cancel` и `refund` требуют заголовок
+`X-Booking-Token` (в URL токен не передаётся): HMAC-SHA256 от id брони на ключе,
+выведенном из `JWT_SECRET` (`app/modules/booking/access.py`). Токен выдаёт `hold` и
+`lookup` (код + email), он не хранится и стабилен: повторный `lookup` вернёт тот же.
+Неверный токен и неизвестный id дают одинаковый 404. Смена `JWT_SECRET` аннулирует все
+токены; гость получает новый через `lookup`. Клиент хранит токен в `sessionStorage`
+вкладки. Чтение `GET /bookings/{id}` токена не требует: оно отдаёт то же, что `lookup`.
 
 ### 7.2 Контракт `POST /v1/bookings/hold`
 

@@ -9,7 +9,7 @@ from app.db.pool import get_pool
 from app.db.tx import serializable
 from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
-from app.modules.booking import service
+from app.modules.booking import access, service
 from app.modules.booking.schemas import (
     BookingLookup,
     HoldRequest,
@@ -119,6 +119,7 @@ async def create_hold(
         expires = row["hold_expires_at"]
         return {
             "id": row["id"],
+            "access_token": access.issue(row["id"]),
             "code": row["code"],
             "status": row["status"],
             "total_amount": float(row["total_amount"]),
@@ -137,8 +138,8 @@ async def lookup_booking(data: BookingLookup, request: Request) -> dict:
     """Guest-facing lookup: the BK-XXXXXX code plus the email the booking was made with.
 
     The code is only ~30 bits and is printed in emails, so on its own it must
-    not unlock anything. This answers with the booking id, which is what
-    cancels or refunds the booking, so the guest has to prove the second
+    not unlock anything. This answers with the booking id and the access token that
+    pays for, cancels or refunds it, so the guest has to prove the second
     factor too. A wrong email and an unknown code both answer 404. The reply
     carries only public stay details: no guest contacts, no payment state.
 
@@ -167,6 +168,7 @@ async def lookup_booking(data: BookingLookup, request: Request) -> dict:
         lines = await _line_dates(conn, row["id"])
         return {
             "id": row["id"],
+            "access_token": access.issue(row["id"]),
             "code": row["code"],
             "status": row["status"],
             "total_amount": row["total_amount"],
@@ -212,7 +214,7 @@ async def get_booking(booking_id: str) -> dict:
         await get_pool().release(conn)
 
 
-@router.post("/{booking_id}/cancel")
+@router.post("/{booking_id}/cancel", dependencies=[Depends(access.require_token)])
 async def cancel_booking(booking_id: str) -> dict:
     """Cancel a hold and return inventory to the pool."""
     pool = get_pool()
