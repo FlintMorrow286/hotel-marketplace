@@ -14,7 +14,7 @@ import secrets
 
 import asyncpg
 
-from app.db.tx import serializable
+from app.db.tx import lock_unit, serializable
 from app.utils.logger import get_logger
 from app.utils.secrets import hash_secret, needs_rehash, verify_secret
 
@@ -360,20 +360,21 @@ async def create_channel_booking(
     idem = idempotency_namespace(partner_id, client_key)
 
     # 1. Hold with the same row locks a guest hold takes.
-    hold = await serializable(
-        conn,
-        lambda: booking_service.create_hold(
+    async with lock_unit(conn, unit_type_id):
+        hold = await serializable(
             conn,
-            unit_type_id=unit_type_id,
-            checkin=checkin,
-            checkout=checkout,
-            guest_name=guest_name,
-            guest_email=guest_email,
-            guest_phone=guest_phone,
-            idempotency_key=idem,
-            origin="channel",
-        ),
-    )
+            lambda: booking_service.create_hold(
+                conn,
+                unit_type_id=unit_type_id,
+                checkin=checkin,
+                checkout=checkout,
+                guest_name=guest_name,
+                guest_email=guest_email,
+                guest_phone=guest_phone,
+                idempotency_key=idem,
+                origin="channel",
+            ),
+        )
 
     # A replay of an already-confirmed booking is a success, not an error:
     # the channel retried after we already confirmed.

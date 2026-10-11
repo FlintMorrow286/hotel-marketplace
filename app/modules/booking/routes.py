@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 
 from app.config.settings import settings
 from app.db.pool import get_pool
-from app.db.tx import serializable
+from app.db.tx import serializable, unit_queue
 from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
 from app.modules.booking import access, service
@@ -86,9 +86,7 @@ async def create_hold(
     Returns 409 when the dates are not available (including the stop-sell case)
     or when the idempotency key collides with a different payload.
     """
-    pool = get_pool()
-    conn = await pool.acquire()
-    try:
+    async with unit_queue(get_pool(), data.unit_type_id) as conn:
 
         async def _hold():
             row = await service.create_hold(
@@ -129,8 +127,6 @@ async def create_hold(
             "checkout_date": data.checkout.isoformat(),
             "lines": [{"date": ln["date"].isoformat(), "price": ln["price"]} for ln in lines],
         }
-    finally:
-        await pool.release(conn)
 
 
 @router.post("/lookup")

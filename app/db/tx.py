@@ -9,13 +9,21 @@ error (no free inventory -> 409).
 Money operations add a second rule: a booking is charged or refunded by one
 request at a time, so a double click or a client retry never reaches the
 payment provider twice.
+
+Holds add a third: they queue per unit type (`unit_queue`, `lock_unit`). Holds
+on one unit type fight over the same inventory rows, and under SERIALIZABLE the
+losers fail and run again; a storm of 100 guests on one room outlasted the
+retries for about one in six. A queue costs a few milliseconds per hold and
+takes the fight away.
 """
 
 from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import Awaitable, Callable
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import FastAPI, Request
@@ -74,8 +82,94 @@ async def unlock(conn: asyncpg.Connection, scope: str, booking_id: str) -> None:
         log.warning("booking-unlock-failed", scope=scope, booking_id=booking_id, error=str(exc))
 
 
+QUEUE_WAIT_SEC = 10.0
+_QUEUE_POLL_SEC = 0.005
+
+
+class QueueTimeout(Exception):
+    """A turn on a unit type did not come up in time."""
+
+
+class _Gate:
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
+_gates: dict[str, _Gate] = {}
+
+
+@asynccontextmanager
+async def _local_turn(key: str, wait_sec: float) -> AsyncIterator[None]:
+    """One request at a time per key inside this process, without holding a connection."""
+    gate = _gates.setdefault(key, _Gate())
+    gate.users += 1
+    try:
+        try:
+            async with asyncio.timeout(wait_sec):
+                await gate.lock.acquire()
+        except TimeoutError as exc:
+            raise QueueTimeout(key) from exc
+        try:
+            yield
+        finally:
+            gate.lock.release()
+    finally:
+        gate.users -= 1
+        if gate.users == 0 and _gates.get(key) is gate:
+            del _gates[key]
+
+
+@asynccontextmanager
+async def lock_unit(
+    conn: asyncpg.Connection, unit_type_id: str, *, wait_sec: float = QUEUE_WAIT_SEC
+) -> AsyncIterator[None]:
+    """Take the turn for a unit type across every worker, on this connection.
+
+    A session-level advisory lock taken before the transaction starts, on purpose:
+    a SERIALIZABLE transaction fixes its snapshot at its first statement, so a lock
+    waited for inside it would be won on a stale snapshot and the winner's rows would
+    still conflict. Polled rather than blocked on, so the wait has a bound.
+    """
+    deadline = time.monotonic() + wait_sec
+    while not await try_lock(conn, "hold", unit_type_id):
+        if time.monotonic() >= deadline:
+            raise QueueTimeout(unit_type_id)
+        await asyncio.sleep(_QUEUE_POLL_SEC)
+    try:
+        yield
+    finally:
+        await unlock(conn, "hold", unit_type_id)
+
+
+@asynccontextmanager
+async def unit_queue(
+    pool: asyncpg.Pool, unit_type_id: str, *, wait_sec: float = QUEUE_WAIT_SEC
+) -> AsyncIterator[asyncpg.Connection]:
+    """A connection for taking a hold on `unit_type_id`, one hold at a time per unit type.
+
+    The turn inside this process is awaited before a connection is taken, so a
+    queue of waiting guests never drains the pool; the advisory lock then orders the
+    workers. Nothing slow belongs inside: no provider calls, no notifications.
+    """
+    deadline = time.monotonic() + wait_sec
+    async with _local_turn(unit_type_id, wait_sec):
+        try:
+            conn = await pool.acquire(timeout=max(0.1, deadline - time.monotonic()))
+        except TimeoutError as exc:
+            raise QueueTimeout(unit_type_id) from exc
+        try:
+            remaining = max(0.0, deadline - time.monotonic())
+            async with lock_unit(conn, unit_type_id, wait_sec=remaining):
+                yield conn
+        finally:
+            await pool.release(conn)
+
+
 def install_conflict_handler(app: FastAPI) -> None:
-    """Answer 503 + Retry-After when a conflict outlasts the retries, not a 500."""
+    """Answer 503 + Retry-After when a conflict outlasts the retries, or a queue the wait, not a 500."""
 
     async def _on_conflict(request: Request, exc: Exception) -> JSONResponse:
         # The 500 this replaces logged a traceback; keep a trace of the 503. The route
@@ -86,11 +180,14 @@ def install_conflict_handler(app: FastAPI) -> None:
             route=getattr(request.scope.get("route"), "path", None),
             error=str(exc),
         )
+        detail = (
+            "too many bookings for this room right now, please retry"
+            if isinstance(exc, QueueTimeout)
+            else "conflicting update, please retry"
+        )
         return JSONResponse(
-            status_code=503,
-            content={"detail": "conflicting update, please retry"},
-            headers={"Retry-After": "1"},
+            status_code=503, content={"detail": detail}, headers={"Retry-After": "1"}
         )
 
-    for exc_type in _CONFLICTS:
+    for exc_type in (*_CONFLICTS, QueueTimeout):
         app.add_exception_handler(exc_type, _on_conflict)
