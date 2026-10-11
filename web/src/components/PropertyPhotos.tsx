@@ -63,6 +63,7 @@ function PhotoManager({
     mutationFn: (file: File) => partner.photos.upload(propertyId, file),
     onSuccess: () => {
       setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["property-photos", propertyId] });
       // The cover may have changed — the catalog must not serve a stale one.
       void queryClient.invalidateQueries({ queryKey: ["properties"] });
       void queryClient.invalidateQueries({ queryKey: ["property"] });
@@ -75,6 +76,7 @@ function PhotoManager({
     mutationFn: (photoId: string) => partner.photos.remove(propertyId, photoId),
     onSuccess: () => {
       setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["property-photos", propertyId] });
       void queryClient.invalidateQueries({ queryKey: ["properties"] });
       void queryClient.invalidateQueries({ queryKey: ["property"] });
     },
