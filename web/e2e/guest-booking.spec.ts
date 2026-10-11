@@ -75,6 +75,45 @@ test("guest can book, pay, look up, and cancel a stay", async ({ browser, page, 
   }
 });
 
+test("guest who just paid can find the booking and cancel it in the same tab", async ({
+  page,
+  request,
+}) => {
+  const fixture = await seedBookableProperty(request);
+  const bookingId = await createHoldThroughUi(page, fixture);
+  const booking = await getBooking(request, bookingId);
+
+  // The booking is slow to refetch: what the success page shows first is whatever the
+  // checkout page left in the shared cache. It must be the confirmed booking, not the hold.
+  await page.route(`**/v1/bookings/${bookingId}`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await route.continue();
+  });
+  await page.getByRole("button", { name: /Оплатить/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/booking/${bookingId}/success$`));
+  await expect(page.getByRole("button", { name: "Отменить бронь" })).toBeVisible({
+    timeout: 1500,
+  });
+  await page.unroute(`**/v1/bookings/${bookingId}`);
+
+  // The lookup page must not bring the old "hold" back either.
+  await page.getByRole("link", { name: "Найти бронь по коду" }).click();
+  await page.getByLabel("Код брони").fill(booking.code);
+  await page.getByLabel("Email").fill(fixture.guest.email);
+  await page.getByRole("button", { name: "Найти" }).click();
+  await expect(page.getByRole("heading", { name: "Подтверждена" })).toBeVisible();
+  await page.getByRole("button", { name: "Открыть бронь" }).click();
+  await expect(page).toHaveURL(new RegExp(`/booking/${bookingId}/success$`));
+
+  await page.getByRole("button", { name: "Отменить бронь" }).click();
+  await page
+    .getByRole("dialog", { name: "Отменить бронь?" })
+    .getByRole("button", { name: "Да, отменить" })
+    .click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect.poll(async () => (await getBooking(request, bookingId)).status).toBe("refunded");
+});
+
 function nextDate(fixture: { dates: { checkin: string; nights: number } }): string[] {
   return Array.from({ length: fixture.dates.nights - 1 }, (_, index) => {
     const date = new Date(`${fixture.dates.checkin}T00:00:00Z`);

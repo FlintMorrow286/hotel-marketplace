@@ -1,7 +1,8 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, Clock } from "lucide-react";
 import { bookings } from "@/api/client";
+import type { BookingOut } from "@/api/types";
 import { humanError } from "@/utils/errors";
 import { formatDate, formatPrice } from "@/utils/format";
 import { Button } from "@/components/ui/Button";
@@ -13,6 +14,7 @@ export function CheckoutPage() {
   useDocumentTitle("Оплата брони");
   const { bookingId } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const { data: booking, isPending, isError } = useQuery({
     queryKey: ["booking", bookingId],
@@ -25,14 +27,27 @@ export function CheckoutPage() {
   const pay = useMutation({
     mutationFn: () => bookings.pay(bookingId as string),
     onSuccess: (data) => {
+      // The success page reads the same query: give it the confirmed booking, not the hold.
+      rememberBooking(data);
       if (data.status === "confirmed") navigate(`/booking/${data.id}/success`);
     },
   });
 
   const refund = useMutation({
     mutationFn: () => bookings.refund(bookingId as string),
-    onSuccess: () => navigate("/", { replace: true }),
+    onSuccess: (data) => {
+      rememberBooking(data);
+      navigate("/", { replace: true });
+    },
   });
+
+  function rememberBooking(data: BookingOut) {
+    queryClient.setQueryData(["booking", data.id], (old: BookingOut | undefined) => ({
+      ...old,
+      ...data,
+    }));
+    void queryClient.invalidateQueries({ queryKey: ["booking", data.id] });
+  }
 
   const msLeft = useCountdown(booking?.hold_expires_at);
   const isHold = booking?.status === "hold";
