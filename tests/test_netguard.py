@@ -8,7 +8,6 @@ with the guard off (conftest.py); these tests turn it on.
 
 from __future__ import annotations
 
-import functools
 import socket
 import uuid
 
@@ -72,10 +71,21 @@ def _event() -> dict:
     return {"id": str(uuid.uuid4()), "event_type": "booking.confirmed"}
 
 
-def _mock_http(monkeypatch, module, handler) -> None:
-    """Make `module`'s httpx clients talk to `handler` instead of the network."""
-    client = functools.partial(httpx.AsyncClient, transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(module.httpx, "AsyncClient", client)
+class _GuardedMockTransport(httpx.AsyncBaseTransport):
+    def __init__(self, handler) -> None:
+        self._mock = httpx.MockTransport(handler)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        await netguard.assert_public_url(str(request.url))
+        return await self._mock.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._mock.aclose()
+
+
+def _mock_http(monkeypatch, handler) -> None:
+    """Validate URLs before dispatching to a fake transport."""
+    monkeypatch.setattr(netguard, "pinned_transport", lambda: _GuardedMockTransport(handler))
 
 
 @pytest.mark.parametrize(
@@ -154,12 +164,12 @@ async def test_a_name_resolving_to_a_private_address_is_refused(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_public_and_not_yet_resolvable_urls_pass(monkeypatch) -> None:
+async def test_public_urls_pass_and_unresolvable_urls_fail_closed(monkeypatch) -> None:
     _resolving(monkeypatch, {"hooks.example": [PUBLIC_IP]})
     await netguard.assert_public_url("https://hooks.example/hook")
     await netguard.assert_public_url(f"http://{PUBLIC_IP}/hook")
-    # A name with no address yet: nothing to reach; the request-time check runs again.
-    await netguard.assert_public_url("https://not-registered-yet.example/hook")
+    with pytest.raises(netguard.InvalidUrl):
+        await netguard.assert_public_url("https://not-registered-yet.example/hook")
 
 
 @pytest.mark.asyncio
@@ -199,7 +209,7 @@ async def test_delivery_to_a_private_address_never_connects(monkeypatch) -> None
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError(f"must not be requested: {request.url}")
 
-    _mock_http(monkeypatch, deliver, handler)
+    _mock_http(monkeypatch, handler)
 
     ok, status_code, error = await deliver.deliver(
         "http://127.0.0.1:9/hook", "secret-secret", _event()
@@ -218,7 +228,7 @@ async def test_a_redirect_into_the_private_network_is_not_followed(monkeypatch) 
         requested.append(str(request.url))
         return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data/"})
 
-    _mock_http(monkeypatch, deliver, handler)
+    _mock_http(monkeypatch, handler)
 
     ok, _, error = await deliver.deliver("https://hooks.example/hook", "secret-secret", _event())
 
@@ -228,7 +238,7 @@ async def test_a_redirect_into_the_private_network_is_not_followed(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_delivery_to_a_public_address_still_works(monkeypatch) -> None:
-    _mock_http(monkeypatch, deliver, lambda request: httpx.Response(204))
+    _mock_http(monkeypatch, lambda request: httpx.Response(204))
 
     ok, status_code, error = await deliver.deliver(
         f"https://{PUBLIC_IP}/hook", "secret-secret", _event()
@@ -261,7 +271,7 @@ async def test_ical_fetch_refuses_private_addresses_and_redirects_into_them(monk
         requested.append(str(request.url))
         return httpx.Response(301, headers={"Location": "http://10.0.0.5/internal.ics"})
 
-    _mock_http(monkeypatch, ical_import, handler)
+    _mock_http(monkeypatch, handler)
 
     with pytest.raises(netguard.UnsafeUrl):
         await ical_import._fetch("http://127.0.0.1:9/cal.ics")

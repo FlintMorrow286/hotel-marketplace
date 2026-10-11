@@ -11,6 +11,7 @@ a partner's manual stop sell survives import untouched.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 
 import asyncpg
@@ -19,14 +20,20 @@ import httpx
 from app.config.settings import settings
 from app.modules.sync.ical_parser import IcalParseError, expand_dates, parse_calendar
 from app.utils.logger import get_logger
-from app.utils.netguard import GUARD_HOOKS
+from app.utils.netguard import stream_request
 
 log = get_logger(__name__)
 
 IMPORT_SOURCE = "import"
 IMPORT_HORIZON_DAYS = 365
 FETCH_TIMEOUT_SEC = 15
+FETCH_DEADLINE_SEC = 20
+FETCH_MAX_BYTES = 2 * 1024 * 1024
 USER_AGENT = "hotel-marketplace-ical-import/1.0"
+
+
+class FetchLimitError(ValueError):
+    """The decoded iCal response exceeds the import limit."""
 
 
 async def sync_subscription(conn: asyncpg.Connection, subscription_id: str) -> dict:
@@ -47,7 +54,7 @@ async def sync_subscription(conn: asyncpg.Connection, subscription_id: str) -> d
 
     try:
         text = await _fetch(sub["url"])
-        events = parse_calendar(text)
+        events = await asyncio.to_thread(parse_calendar, text)
     except (httpx.HTTPError, httpx.InvalidURL, IcalParseError, ValueError) as exc:
         await _mark(conn, sub["id"], "error", str(exc)[:500], 0)
         log.warning("ical-import-failed", subscription_id=sub["id"], error=str(exc))
@@ -55,7 +62,7 @@ async def sync_subscription(conn: asyncpg.Connection, subscription_id: str) -> d
 
     today = dt.date.today()
     horizon = today + dt.timedelta(days=IMPORT_HORIZON_DAYS)
-    blocked = expand_dates(events, today, horizon)
+    blocked = await asyncio.to_thread(expand_dates, events, today, horizon)
 
     async with conn.transaction():
         result = await apply_import(conn, sub["unit_type_id"], blocked)
@@ -187,15 +194,33 @@ async def list_due(conn: asyncpg.Connection, limit: int = 25) -> list[str]:
 
 
 async def _fetch(url: str) -> str:
-    async with httpx.AsyncClient(
-        timeout=FETCH_TIMEOUT_SEC,
-        follow_redirects=True,
-        max_redirects=3,
-        event_hooks=GUARD_HOOKS,
-    ) as client:
-        response = await client.get(url, headers={"User-Agent": USER_AGENT})
-        response.raise_for_status()
-        return response.text
+    try:
+        async with asyncio.timeout(FETCH_DEADLINE_SEC):
+            async with stream_request(
+                "GET",
+                url,
+                timeout=FETCH_TIMEOUT_SEC,
+                max_redirects=3,
+                headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"},
+            ) as response:
+                response.raise_for_status()
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > FETCH_MAX_BYTES:
+                        raise FetchLimitError(
+                            f"iCal response exceeds {FETCH_MAX_BYTES} decoded bytes"
+                        )
+                    body.extend(chunk)
+                try:
+                    encoding = response.encoding or "utf-8"
+                except LookupError:
+                    encoding = "utf-8"
+                try:
+                    return bytes(body).decode(encoding, errors="replace")
+                except LookupError:
+                    return bytes(body).decode("utf-8", errors="replace")
+    except TimeoutError as exc:
+        raise httpx.TimeoutException(f"iCal fetch exceeded {FETCH_DEADLINE_SEC}s deadline") from exc
 
 
 async def _mark(
