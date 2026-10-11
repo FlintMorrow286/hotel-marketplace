@@ -137,6 +137,24 @@ WebSocket (FastAPI) для live-обновления шахматки.
 - 100 конкурентных запросов на 1 свободный номер → ровно 1 success, 99 conflict
 - Цепочка `hold → pay(stub) → confirmed` работает через curl от начала до конца
 
+Как это проверить (всё воспроизводимо командами):
+
+```bash
+bash scripts/dev_services.sh                         # Postgres + Redis, если не подняты
+uv run pytest tests -q                               # бэкенд: БД создаётся и удаляется самим набором
+uv run ruff check app tests scripts
+cd web && npm ci && npm test && npm run typecheck   # vitest + типы
+# нагрузка на горячий путь (сервер уже запущен на APP_PORT):
+uv run python scripts/load_holds.py --n 100 --units 1     # 1 x 201, 99 x 409
+uv run python scripts/load_holds.py --n 100 --units 100   # 100 x 201 на одних и тех же строках
+# e2e гостевого пути в браузере: web/playwright.config.ts, `npm run e2e` (см. job `e2e` в CI)
+```
+
+`scripts/load_holds.py` сам создаёт и убирает тестовый номер и завершается с кодом 1,
+если база расходится с ответами API или кто-то получил не 201/409.
+Холды на один тип номера выстраиваются в очередь (`app/db/tx.py`: `unit_queue`), поэтому
+шторм на одни и те же строки не даёт 503.
+
 ---
 
 ## ⚖️ Юридическое
