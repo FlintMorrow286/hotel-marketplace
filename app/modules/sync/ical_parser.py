@@ -7,9 +7,13 @@ are refused so a bad feed cannot create an unbounded import.
 
 from __future__ import annotations
 
+import calendar
 import datetime as dt
 import re
+from bisect import bisect_right
 from dataclasses import dataclass, field
+from functools import lru_cache
+from math import gcd
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _DATE = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
@@ -194,11 +198,18 @@ def _calendar_date(temporal: _Temporal) -> dt.date:
     return value.date() if isinstance(value, dt.datetime) else value
 
 
+def _to_timezone(value: dt.datetime, zone: dt.tzinfo) -> dt.datetime:
+    try:
+        return value.astimezone(zone)
+    except (OverflowError, ValueError) as exc:
+        raise IcalParseError("DATE-TIME timezone conversion out of range") from exc
+
+
 def _event_after(left: _Temporal, right: _Temporal) -> bool:
     if _is_datetime(left.value) != _is_datetime(right.value):
         return False
     if isinstance(left.value, dt.datetime) and isinstance(right.value, dt.datetime):
-        return left.value.astimezone(_UTC) > right.value.astimezone(_UTC)
+        return _to_timezone(left.value, _UTC) > _to_timezone(right.value, _UTC)
     return left.value > right.value
 
 
@@ -267,7 +278,9 @@ def _build_event(props: list[tuple[str, str, dict[str, str]]]) -> VEvent:
                 raise IcalParseError(f"EXDATE value type differs from DTSTART for {uid!r}")
             exdates.append(exdate)
 
-    last_start = _occurrence_at(start, rule.frequency, rule.interval, rule.last_index) if rule else start
+    last_start = (
+        _occurrence_at(start, rule.frequency, rule.interval, rule.last_index) if rule else start
+    )
     try:
         envelope_end = _calendar_date(last_start) + dt.timedelta(days=duration_days)
     except (OverflowError, ValueError) as exc:
@@ -327,9 +340,72 @@ def _parse_rrule(rule: str, uid: str, start: _Temporal) -> _RecurrenceRule:
     return _RecurrenceRule(frequency, interval, count, until, last_index)
 
 
-def _occurrence_at(
-    start: _Temporal, frequency: str, interval: int, index: int
-) -> _Temporal:
+def _month_has_day(year: int, month: int, day: int) -> bool:
+    if month == 2:
+        days_in_month = 29 if calendar.isleap(year) else 28
+    elif month in (4, 6, 9, 11):
+        days_in_month = 30
+    else:
+        days_in_month = 31
+    return day <= days_in_month
+
+
+@lru_cache(maxsize=256)
+def _valid_period_pattern(
+    frequency: str, interval: int, cycle_index: int, month: int, day: int
+) -> tuple[int, tuple[int, ...]]:
+    cycle_size = 4800 if frequency == "MONTHLY" else 400
+    period_count = cycle_size // gcd(cycle_size, interval)
+    valid_periods = []
+    for period in range(period_count):
+        if frequency == "MONTHLY":
+            month_index = cycle_index + interval * period
+            year, month_index = divmod(month_index, 12)
+            candidate_month = month_index + 1
+        else:
+            year = cycle_index + interval * period
+            candidate_month = month
+        if _month_has_day(year, candidate_month, day):
+            valid_periods.append(period)
+    return period_count, tuple(valid_periods)
+
+
+def _skips_invalid_periods(start: _Temporal, frequency: str) -> bool:
+    value = start.value
+    if frequency == "MONTHLY":
+        return value.day > 28
+    return frequency == "YEARLY" and value.month == 2 and value.day == 29
+
+
+def _period_pattern(start: _Temporal, frequency: str, interval: int) -> tuple[int, tuple[int, ...]]:
+    value = start.value
+    if frequency == "MONTHLY":
+        cycle_index = (value.year % 400) * 12 + value.month - 1
+    else:
+        cycle_index = value.year % 400
+    return _valid_period_pattern(frequency, interval, cycle_index, value.month, value.day)
+
+
+def _period_index(start: _Temporal, frequency: str, interval: int, index: int) -> int:
+    if not _skips_invalid_periods(start, frequency):
+        return index
+    cycle_size, valid_periods = _period_pattern(start, frequency, interval)
+    cycles, position = divmod(index, len(valid_periods))
+    return cycles * cycle_size + valid_periods[position]
+
+
+def _occurrence_index_at_or_before_period(
+    start: _Temporal, frequency: str, interval: int, period: int
+) -> int:
+    if not _skips_invalid_periods(start, frequency):
+        return period
+    cycle_size, valid_periods = _period_pattern(start, frequency, interval)
+    cycles, offset = divmod(period, cycle_size)
+    count = cycles * len(valid_periods) + bisect_right(valid_periods, offset)
+    return count - 1
+
+
+def _occurrence_at(start: _Temporal, frequency: str, interval: int, index: int) -> _Temporal:
     value = start.value
     months_per_step = interval if frequency == "MONTHLY" else interval * 12
     try:
@@ -337,10 +413,11 @@ def _occurrence_at(
             days = interval * index * (7 if frequency == "WEEKLY" else 1)
             shifted = value + dt.timedelta(days=days)
         else:
-            month_index = value.year * 12 + value.month - 1 + months_per_step * index
+            period_index = _period_index(start, frequency, interval, index)
+            month_index = value.year * 12 + value.month - 1 + months_per_step * period_index
             year, month_index = divmod(month_index, 12)
             month = month_index + 1
-            day = value.day if index == 0 else min(value.day, 28)
+            day = value.day
             if isinstance(value, dt.datetime):
                 shifted = value.replace(year=year, month=month, day=day)
             else:
@@ -357,7 +434,8 @@ def _index_floor(start: _Temporal, frequency: str, interval: int, target: dt.dat
         return max(0, (target - start_date).days // period)
     months = (target.year - start_date.year) * 12 + target.month - start_date.month
     period = interval if frequency == "MONTHLY" else interval * 12
-    return max(0, months // period)
+    candidate_period = max(0, months // period)
+    return _occurrence_index_at_or_before_period(start, frequency, interval, candidate_period)
 
 
 def _until_target_date(until: _Temporal, start: _Temporal) -> dt.date:
@@ -366,30 +444,30 @@ def _until_target_date(until: _Temporal, start: _Temporal) -> dt.date:
     assert isinstance(until.value, dt.datetime)
     if start.unknown_timezone:
         try:
-            return until.value.astimezone(_UTC).date() + dt.timedelta(days=1)
-        except OverflowError:
-            return dt.date.max
+            utc_date = _to_timezone(until.value, _UTC).date()
+            return utc_date + dt.timedelta(days=1)
+        except (OverflowError, ValueError) as exc:
+            raise IcalParseError("UNTIL out of range") from exc
     assert isinstance(start.value, dt.datetime)
-    return until.value.astimezone(start.value.tzinfo).date()
+    assert start.value.tzinfo is not None
+    return _to_timezone(until.value, start.value.tzinfo).date()
 
 
 def _within_until(occurrence: _Temporal, until: _Temporal) -> bool:
     if isinstance(occurrence.value, dt.datetime) and isinstance(until.value, dt.datetime):
-        occurrence_utc = occurrence.value.astimezone(_UTC)
-        until_utc = until.value.astimezone(_UTC)
+        occurrence_utc = _to_timezone(occurrence.value, _UTC)
+        until_utc = _to_timezone(until.value, _UTC)
         if occurrence.unknown_timezone:
             try:
                 # Unknown zones get a conservative margin so a valid close is not lost.
                 occurrence_utc -= dt.timedelta(days=1)
-            except OverflowError:
-                occurrence_utc = dt.datetime.min.replace(tzinfo=_UTC)
+            except OverflowError as exc:
+                raise IcalParseError("RRULE occurrence out of range") from exc
         return occurrence_utc <= until_utc
     return _calendar_date(occurrence) <= _calendar_date(until)
 
 
-def _last_index_until(
-    start: _Temporal, frequency: str, interval: int, until: _Temporal
-) -> int:
+def _last_index_until(start: _Temporal, frequency: str, interval: int, until: _Temporal) -> int:
     if not _within_until(start, until):
         return 0
     candidate = _index_floor(start, frequency, interval, _until_target_date(until, start))
@@ -423,7 +501,7 @@ def _is_excluded(occurrence: _Temporal, exdates: tuple[_Temporal, ...]) -> bool:
             if occurrence.unknown_timezone or exdate.unknown_timezone:
                 if occurrence.value.replace(tzinfo=None) == exdate.value.replace(tzinfo=None):
                     return True
-            elif occurrence.value.astimezone(_UTC) == exdate.value.astimezone(_UTC):
+            elif _to_timezone(occurrence.value, _UTC) == _to_timezone(exdate.value, _UTC):
                 return True
         elif occurrence.value == exdate.value:
             return True
@@ -434,7 +512,10 @@ def _add_dates(out: set[dt.date], start: dt.date, end: dt.date) -> None:
     current = start
     while current < end:
         out.add(current)
-        current += dt.timedelta(days=1)
+        try:
+            current += dt.timedelta(days=1)
+        except (OverflowError, ValueError) as exc:
+            raise IcalParseError("date range out of range") from exc
 
 
 def _expand_recurrence(
@@ -449,8 +530,8 @@ def _expand_recurrence(
     if details.duration_days > 1:
         try:
             target = date_from - dt.timedelta(days=details.duration_days - 1)
-        except OverflowError:
-            target = dt.date.min
+        except (OverflowError, ValueError) as exc:
+            raise IcalParseError(f"RRULE target out of range for {event.uid!r}") from exc
     if target > _calendar_date(_occurrence_at(details.start, frequency, interval, last_index)):
         return
 
