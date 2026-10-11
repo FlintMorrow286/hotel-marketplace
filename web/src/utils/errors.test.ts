@@ -28,6 +28,24 @@ const knownErrors = [
     message: "Состояние брони изменилось во время оплаты. Попробуйте ещё раз.",
   },
   {
+    detail: "hold vanished on 2026-10-12; the booking is inconsistent; your payment was returned",
+    message: "Бронь подтвердить не удалось, деньги возвращены. Оформите её заново.",
+  },
+  {
+    detail: "booking changed state during payment; your payment was returned",
+    message: "Бронь подтвердить не удалось, деньги возвращены. Оформите её заново.",
+  },
+  {
+    detail:
+      "booking changed state during payment; your payment could not be returned automatically; support will refund it",
+    message: "Бронь подтвердить не удалось. Деньги вернём вручную — напишите в поддержку.",
+  },
+  {
+    detail: "booking token missing",
+    message:
+      "Эта бронь открыта не в этой вкладке. Найдите её по коду и email на странице «Моя бронь».",
+  },
+  {
     detail: "booking not found",
     message: "Бронирование не найдено. Обновите страницу.",
   },
