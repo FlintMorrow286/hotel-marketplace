@@ -410,6 +410,56 @@ async def cancel_channel_booking(
     if status_now is None:
         raise NotOwned("booking not found")
 
+    if status_now == "cancelled":
+        return {"id": booking_id, "status": "cancelled"}
+    if status_now == "refunded":
+        booking = await conn.fetchrow(
+            """
+            SELECT b.id::text, b.code, b.status, b.total_amount::float8, b.paid_at,
+                   b.checkin_date, b.checkout_date,
+                   COALESCE(
+                       refund.amount::float8,
+                       b.total_amount::float8 - COALESCE(b.kept_amount, 0)::float8
+                   ) AS refunded_amount
+            FROM booking b
+            LEFT JOIN LATERAL (
+                SELECT r.amount
+                FROM payment r
+                WHERE r.booking_id = b.id AND r.status = 'refunded'
+                  AND r.created_at >= COALESCE(
+                      (SELECT max(created_at) FROM payment
+                       WHERE booking_id = b.id AND status = 'succeeded'),
+                      '-infinity'::timestamptz
+                  )
+                ORDER BY r.created_at DESC
+                LIMIT 1
+            ) refund ON true
+            WHERE b.id = $1
+            """,
+            booking_id,
+        )
+        if booking is None:
+            raise NotOwned("booking not found")
+        lines = await conn.fetch(
+            "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",
+            booking_id,
+        )
+        refunded_amount = float(booking["refunded_amount"])
+        return {
+            "id": booking["id"],
+            "code": booking["code"],
+            "status": booking["status"],
+            "total_amount": float(booking["total_amount"]),
+            "paid_at": booking["paid_at"].isoformat() if booking["paid_at"] else None,
+            "checkin_date": booking["checkin_date"].isoformat(),
+            "checkout_date": booking["checkout_date"].isoformat(),
+            "lines": [
+                {"date": line["date"].isoformat(), "price": float(line["price"])}
+                for line in lines
+            ],
+            "free_cancelled": refunded_amount >= float(booking["total_amount"]),
+            "refunded_amount": refunded_amount,
+        }
     if status_now == "confirmed":
         return await payment_service.refund_booking(booking_id, conn=conn)
     if status_now == "hold":
