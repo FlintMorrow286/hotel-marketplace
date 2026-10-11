@@ -34,7 +34,9 @@ class Settings(BaseSettings):
     )
 
     # ----- App -----
-    app_env: str = Field(default="local")
+    # Production unless said otherwise: a deploy that forgets APP_ENV must not run on
+    # the placeholder JWT secret. .env.example sets local for development.
+    app_env: str = Field(default="production")
     app_host: str = Field(default="0.0.0.0")
     app_port: int = Field(default=8000)
     # Public origin used to build URLs handed to partners (iCal feeds, links).

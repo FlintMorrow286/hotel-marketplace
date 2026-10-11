@@ -6,6 +6,10 @@ first login or the first payment.
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
+from cryptography.fernet import Fernet
+
 from app.config.payment import PaymentMode
 from app.config.settings import Settings
 
@@ -16,13 +20,30 @@ MIN_JWT_SECRET_LEN = 32
 
 # Modes with a provider behind them (see app/modules/payment/provider.py).
 IMPLEMENTED_PAYMENT_MODES = {PaymentMode.STUB, PaymentMode.DELAYED_STUB, PaymentMode.FAIL}
+# Modes that exist to exercise the code: delayed_stub waits, fail always fails.
+TEST_ONLY_PAYMENT_MODES = {PaymentMode.DELAYED_STUB, PaymentMode.FAIL}
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
 
 class ConfigError(RuntimeError):
     """The configuration is not safe to run with."""
 
 
-def check_config(s: Settings) -> None:
+def _is_fernet_key(value: str) -> bool:
+    try:
+        Fernet(value.encode())
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def production_problems(s: Settings) -> list[str]:
+    """Everything wrong with `s`, all at once.
+
+    A payment mode without an implementation is wrong everywhere. The rest only
+    matters outside development, where APP_ENV is local, dev or test.
+    """
     problems: list[str] = []
 
     if s.payment_mode not in IMPLEMENTED_PAYMENT_MODES:
@@ -31,13 +52,38 @@ def check_config(s: Settings) -> None:
             f"use one of {sorted(m.value for m in IMPLEMENTED_PAYMENT_MODES)}"
         )
 
-    if not s.is_dev and (
-        s.jwt_secret == DEFAULT_JWT_SECRET or len(s.jwt_secret) < MIN_JWT_SECRET_LEN
-    ):
-        problems.append(
-            f"JWT_SECRET must be a random value of at least {MIN_JWT_SECRET_LEN} characters "
-            f"when APP_ENV={s.app_env!r} (only local, dev and test may use the placeholder)"
-        )
+    if s.is_dev:
+        return problems
 
+    # APP_ENV defaults to production, so a deploy that forgets it lands here.
+    where = f"when APP_ENV={s.app_env!r} (set APP_ENV=local to develop)"
+
+    if s.jwt_secret == DEFAULT_JWT_SECRET or len(s.jwt_secret) < MIN_JWT_SECRET_LEN:
+        problems.append(
+            f"JWT_SECRET must be a random value of at least {MIN_JWT_SECRET_LEN} characters {where}"
+        )
+    if s.allow_private_targets:
+        problems.append(
+            f"ALLOW_PRIVATE_TARGETS must be false {where}: it lets partner-supplied "
+            "webhook and iCal URLs reach loopback, the internal network and cloud metadata"
+        )
+    if not _is_fernet_key(s.webhook_seal_key):
+        problems.append(f"WEBHOOK_SEAL_KEY must be a valid Fernet key {where}")
+    if s.webhook_seal_key_previous and not _is_fernet_key(s.webhook_seal_key_previous):
+        problems.append(f"WEBHOOK_SEAL_KEY_PREVIOUS is set but is not a valid Fernet key {where}")
+    base = urlsplit(s.app_base_url)
+    if base.scheme != "https" or (base.hostname or "") in _LOCAL_HOSTS:
+        problems.append(
+            f"APP_BASE_URL must be the public https address {where}: partners are handed "
+            f"iCal feed URLs built from it (got {s.app_base_url!r})"
+        )
+    if s.payment_mode in TEST_ONLY_PAYMENT_MODES:
+        problems.append(f"PAYMENT_MODE={s.payment_mode!r} is for tests only {where}")
+
+    return problems
+
+
+def check_config(s: Settings) -> None:
+    problems = production_problems(s)
     if problems:
         raise ConfigError("; ".join(problems))

@@ -30,7 +30,7 @@ Set APP_BASE_URL to the externally visible HTTPS origin. WEB_PORT controls the p
 | JWT_SECRET | Required | Application signing key; use a unique random value of at least 32 characters. |
 | WEBHOOK_SEAL_KEY | Required | Fernet key used to seal partner webhook secrets. Generate with the command above. |
 | WEBHOOK_SEAL_KEY_PREVIOUS | Empty | Optional old Fernet key during a key rotation. |
-| APP_BASE_URL | http://localhost:8000 | Public origin used in partner-facing URLs. |
+| APP_BASE_URL | required | Public https origin used in partner-facing URLs (iCal feed addresses). Startup refuses http and localhost. |
 | APP_PORT | 8000 | Internal Uvicorn port; Compose keeps it fixed and WEB_PORT changes the published host port. |
 | WEB_PORT | 8000 | Host port published by the API service. |
 | WEB_CONCURRENCY | 2 | Uvicorn workers per API container. The jobs service always uses one. |
@@ -61,3 +61,18 @@ Back up both data sets on a schedule and test restores before relying on them. A
 - Docker is not installed in the development sandbox, so the image was not built and the Compose stack was not started.
 - Container healthchecks, reverse-proxy networking, persistent-volume ownership, and backup/restore commands were not exercised against Docker.
 - The Dockerfile and Compose configuration received static checks only; they still need a real Docker build and deployment smoke test.
+
+## What startup refuses
+
+`APP_ENV` defaults to `production`, so a deployment that forgets it is checked as one. Unless
+`APP_ENV` is `local`, `dev` or `test`, the application stops at boot, listing every problem at once, when:
+
+- `JWT_SECRET` is the placeholder from the repository or shorter than 32 characters (anyone who knows
+  the placeholder could sign an admin token);
+- `WEBHOOK_SEAL_KEY` (or `WEBHOOK_SEAL_KEY_PREVIOUS`, when set) is not a valid Fernet key;
+- `ALLOW_PRIVATE_TARGETS` is on (it lets partner-supplied webhook and iCal URLs reach the internal network);
+- `APP_BASE_URL` is not the public `https` address;
+- `PAYMENT_MODE` is `fail` or `delayed_stub` (test-only), or has no implementation.
+
+`PAYMENT_MODE=stub` is accepted, since it is the only implemented provider, and logs a warning at every
+start: bookings are confirmed without charging anyone.

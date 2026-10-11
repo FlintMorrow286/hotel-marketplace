@@ -28,6 +28,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     check_config(settings)
     log.info("startup", env=settings.app_env, port=settings.app_port)
+    if not settings.is_dev and settings.payment_mode == "stub":
+        log.warning(
+            "payment-stub-outside-dev",
+            hint="bookings are confirmed without charging anyone; set PAYMENT_MODE to a real provider",
+        )
 
     pool = await init_pool()
     log.info("db-pool-ready", size=pool.get_size())

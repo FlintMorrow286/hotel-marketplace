@@ -32,6 +32,9 @@ import os
 # the same rows the test's connection does. Conftest is imported before any
 # test module touches `create_app`, so the flag is always in place first.
 os.environ["PYTEST_RUNNING"] = "1"
+# APP_ENV defaults to production, which refuses the placeholder JWT secret the suite
+# signs with. Set before `settings` is imported below; a real value from the caller wins.
+os.environ.setdefault("APP_ENV", "test")
 
 # The suite points webhooks at localhost:9. Only tests/test_netguard.py turns the guard
 # against private addresses back on.
