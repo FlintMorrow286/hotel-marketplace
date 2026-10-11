@@ -140,26 +140,80 @@ async def test_a_charge_that_cannot_be_returned_stays_on_record(
     assert await _statuses(committed_conn, booking_id) == ["succeeded"]
 
 
+def _conflict_on_confirm(monkeypatch) -> None:
+    """Make the confirmation transaction, and only it, fail with a serialization conflict."""
+    real = service.serializable
+
+    async def conflict(conn, body, **kwargs):
+        if getattr(body, "__name__", "") == "_confirm":
+            raise asyncpg.SerializationError("could not serialize access")
+        return await real(conn, body, **kwargs)
+
+    monkeypatch.setattr(service, "serializable", conflict)
+
+
 @pytest.mark.asyncio
-async def test_a_conflict_after_the_charge_returns_it_and_leaves_the_hold(
+async def test_a_conflict_after_the_charge_returns_it_and_closes_the_hold(
     committed_conn, monkeypatch
 ) -> None:
     ut = await _seed_unit(committed_conn, "safe3@example.com")
     booking_id = await _hold(committed_conn, ut)
     provider = RecordingProvider()
     _use(monkeypatch, provider)
+    _conflict_on_confirm(monkeypatch)
 
-    async def conflict(conn, body, **kwargs):
-        raise asyncpg.SerializationError("could not serialize access")
-
-    monkeypatch.setattr(service, "serializable", conflict)
-    with pytest.raises(asyncpg.SerializationError):
+    with pytest.raises(service.PaymentError, match="your payment was returned"):
         await service.pay_and_confirm(booking_id, conn=committed_conn)
-    monkeypatch.undo()
 
     assert provider.verbs == ["pay", "refund"]
     status = await committed_conn.fetchval("SELECT status FROM booking WHERE id = $1", booking_id)
-    assert status == "hold"
+    assert status == "cancelled"
+    held = await committed_conn.fetchval(
+        "SELECT hold FROM inventory_day WHERE unit_type_id = $1 AND date = $2", ut, TODAY
+    )
+    assert held == 0
+
+
+@pytest.mark.asyncio
+async def test_a_returned_charge_cannot_be_followed_by_a_second_one_on_the_same_booking(
+    committed_conn, monkeypatch
+) -> None:
+    """A provider idempotent on booking_id would answer the returned charge's success again."""
+    ut = await _seed_unit(committed_conn, "safe3b@example.com")
+    booking_id = await _hold(committed_conn, ut)
+    provider = RecordingProvider()
+    _use(monkeypatch, provider)
+    _conflict_on_confirm(monkeypatch)
+    with pytest.raises(service.PaymentError):
+        await service.pay_and_confirm(booking_id, conn=committed_conn)
+
+    with pytest.raises(service.PaymentError, match="not holdable"):
+        await service.pay_and_confirm(booking_id, conn=committed_conn)
+
+    assert provider.verbs == ["pay", "refund"], "the provider must not be asked to charge again"
+
+
+@pytest.mark.asyncio
+async def test_a_charge_that_cannot_be_written_down_is_still_returned(
+    committed_conn, monkeypatch
+) -> None:
+    ut = await _seed_unit(committed_conn, "safe3c@example.com")
+    booking_id = await _hold(committed_conn, ut)
+    provider = RecordingProvider()
+    _use(monkeypatch, provider)
+    real_record = service._record_payment
+
+    async def ledger_down_for_charges(conn, booking, name, amount, status, external_id):
+        if status == "succeeded":
+            raise RuntimeError("ledger is down")
+        return await real_record(conn, booking, name, amount, status, external_id)
+
+    monkeypatch.setattr(service, "_record_payment", ledger_down_for_charges)
+
+    with pytest.raises(service.PaymentError, match="your payment was returned"):
+        await service.pay_and_confirm(booking_id, conn=committed_conn)
+
+    assert provider.verbs == ["pay", "refund"]
 
 
 # ---------------------------------------------------------------- a refund is made once
@@ -199,36 +253,77 @@ async def test_a_refund_that_died_midway_is_finished_not_repeated(
 
 
 @pytest.mark.asyncio
-async def test_a_returned_earlier_charge_does_not_stand_in_for_the_refund(
+async def test_a_refund_on_record_must_be_newer_than_the_last_charge(committed_conn) -> None:
+    booking_id = await _far_booking(committed_conn, "safe5@example.com")
+    await committed_conn.execute("DELETE FROM payment WHERE booking_id = $1", booking_id)
+    base = dt.datetime.now(dt.UTC) - dt.timedelta(hours=1)
+
+    async def row(status: str, minutes: int) -> None:
+        await committed_conn.execute(
+            "INSERT INTO payment (booking_id, provider, amount, status, created_at) "
+            "VALUES ($1, 'stub', 100, $2, $3)",
+            booking_id,
+            status,
+            base + dt.timedelta(minutes=minutes),
+        )
+
+    await row("succeeded", 0)
+    await row("refunded", 1)
+    await row("succeeded", 2)
+    assert await service._refund_on_record(committed_conn, booking_id) is None
+
+    await row("refunded", 3)
+    found = await service._refund_on_record(committed_conn, booking_id)
+    assert found is not None and found["amount"] == 100
+
+
+@pytest.mark.asyncio
+async def test_a_refund_that_cannot_be_written_down_still_closes_the_booking(
     committed_conn, monkeypatch
 ) -> None:
-    ut = await _seed_unit(committed_conn, "safe5@example.com")
-    booking_id = await _hold(committed_conn, ut)
+    """Left confirmed, the booking would invite a second refund call on the next try."""
+    booking_id = await _far_booking(committed_conn, "safe5b@example.com")
     provider = RecordingProvider()
     _use(monkeypatch, provider)
+    real_record = service._record_payment
 
-    # First attempt: charged, then the confirmation conflicts and the charge is returned.
-    real = service.serializable
+    async def ledger_down_for_refunds(conn, booking, name, amount, status, external_id):
+        if status == "refunded":
+            raise RuntimeError("ledger is down")
+        return await real_record(conn, booking, name, amount, status, external_id)
 
-    async def conflict(conn, body, **kwargs):
-        raise asyncpg.SerializationError("could not serialize access")
+    monkeypatch.setattr(service, "_record_payment", ledger_down_for_refunds)
 
-    monkeypatch.setattr(service, "serializable", conflict)
-    with pytest.raises(asyncpg.SerializationError):
-        await service.pay_and_confirm(booking_id, conn=committed_conn)
-    monkeypatch.setattr(service, "serializable", real)
+    out = await service.refund_booking(booking_id, conn=committed_conn)
 
-    # Second attempt goes through; cancelling it later must refund this charge.
-    await service.pay_and_confirm(booking_id, conn=committed_conn)
+    assert out["status"] == "refunded"
+    with pytest.raises(service.PaymentError, match="status=refunded"):
+        await service.refund_booking(booking_id, conn=committed_conn)
+    assert provider.verbs == ["refund"]
+
+
+@pytest.mark.asyncio
+async def test_a_refund_record_that_fails_once_is_written_on_the_retry(
+    committed_conn, monkeypatch
+) -> None:
+    booking_id = await _far_booking(committed_conn, "safe5c@example.com")
+    provider = RecordingProvider()
+    _use(monkeypatch, provider)
+    real_record = service._record_payment
+    seen = {"refunded": 0}
+
+    async def blip(conn, booking, name, amount, status, external_id):
+        if status == "refunded":
+            seen["refunded"] += 1
+            if seen["refunded"] == 1:
+                raise RuntimeError("blip")
+        return await real_record(conn, booking, name, amount, status, external_id)
+
+    monkeypatch.setattr(service, "_record_payment", blip)
+
     await service.refund_booking(booking_id, conn=committed_conn)
 
-    assert provider.verbs == ["pay", "refund", "pay", "refund"]
-    assert await _statuses(committed_conn, booking_id) == [
-        "succeeded",
-        "refunded",
-        "succeeded",
-        "refunded",
-    ]
+    assert await _statuses(committed_conn, booking_id) == ["succeeded", "refunded"]
 
 
 # ---------------------------------------------------------------- the deadline is the property's

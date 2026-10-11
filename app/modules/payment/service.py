@@ -10,6 +10,7 @@ converting a hold can never race with a reaper or another guest.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -18,7 +19,7 @@ import asyncpg
 from app.config import legal
 from app.db.pool import get_pool
 from app.db.tx import serializable, try_lock, unlock
-from app.modules.booking.service import BookingError
+from app.modules.booking.service import BookingError, release_hold
 from app.modules.payment.provider import PaymentProvider, PaymentResult, get_payment_provider
 from app.utils.logger import get_logger
 
@@ -96,12 +97,6 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
             )
             raise PaymentError("payment failed")
 
-        # The money has moved. Write that down before anything else can fail, so a
-        # charge never exists without a row that says so.
-        await _record_payment(
-            conn, booking_id, provider.name, amount, "succeeded", result.external_id
-        )
-
         # --- confirm transactionally (re-run if Postgres aborts it for a conflict)
         async def _confirm() -> tuple[dict, asyncpg.Record]:
             locked = await conn.fetch(
@@ -175,19 +170,29 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
             return await _row_to_out(row, lines), row
 
         try:
+            # The money has moved: write that down first, so a charge never exists
+            # without a row that says so, then confirm.
+            await _record_payment(
+                conn, booking_id, provider.name, amount, "succeeded", result.external_id
+            )
             out, row = await serializable(conn, _confirm)
         except Exception as exc:
-            # The guest has paid but the booking is not confirmed: the hold was
-            # reaped during the provider call, or the transaction kept conflicting.
+            # The guest has paid but the booking is not confirmed: the hold was reaped
+            # during the provider call, or the transaction kept conflicting.
+            log.error("confirmation-failed-after-charge", booking_id=booking_id, error=repr(exc))
             returned = await _give_back(conn, provider, booking_id, amount)
-            if isinstance(exc, PaymentError):
-                tail = (
-                    "your payment was returned"
-                    if returned
-                    else "your payment could not be returned automatically; support will refund it"
-                )
-                raise PaymentError(f"{exc}; {tail}") from exc
-            raise
+            if returned:
+                # A returned charge is final. Closing the hold means a retry starts from
+                # a new booking and a new charge, never from a provider that may answer
+                # the old, idempotent one with its earlier success.
+                await _close_returned_hold(conn, booking_id)
+            reason = str(exc) if isinstance(exc, PaymentError) else "booking could not be confirmed"
+            tail = (
+                "your payment was returned"
+                if returned
+                else "your payment could not be returned automatically; support will refund it"
+            )
+            raise PaymentError(f"{reason}; {tail}") from exc
         log.info("booking-confirmed", booking_id=booking_id, code=row["code"])
 
         # After the commit: a confirmation that rolls back or re-runs must not notify.
@@ -305,13 +310,11 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
             if is_free:
                 amount = booking["total_amount"]
             else:
-                amount = round(
-                    booking["total_amount"] * (1 - legal.CANCELLATION_PENALTY_RATE), 2
-                )
+                amount = round(booking["total_amount"] * (1 - legal.CANCELLATION_PENALTY_RATE), 2)
             result = await provider.refund(booking_id, amount)
             if result.status != "refunded":
                 raise PaymentError("refund failed")
-            await _record_payment(
+            await _record_payment_reliably(
                 conn, booking_id, provider.name, amount, "refunded", result.external_id
             )
         kept = round(booking["total_amount"] - amount, 2)
@@ -423,14 +426,52 @@ async def _give_back(
             "charge-not-returned", booking_id=booking_id, amount=amount, provider_said=result.status
         )
         return False
-    try:
-        await _record_payment(
-            conn, booking_id, provider.name, amount, "refunded", result.external_id
-        )
-    except Exception as exc:
-        log.error("charge-return-unrecorded", booking_id=booking_id, amount=amount, error=str(exc))
+    await _record_payment_reliably(
+        conn, booking_id, provider.name, amount, "refunded", result.external_id
+    )
     log.warning("charge-returned", booking_id=booking_id, amount=amount)
     return True
+
+
+async def _close_returned_hold(conn: asyncpg.Connection, booking_id: str) -> None:
+    """Release the hold of a booking whose charge was returned. Never raises."""
+    try:
+        await serializable(conn, lambda: release_hold(conn, booking_id))
+    except Exception as exc:
+        log.error("hold-not-released-after-return", booking_id=booking_id, error=str(exc))
+
+
+async def _record_payment_reliably(
+    conn: asyncpg.Connection,
+    booking_id: str,
+    provider: str,
+    amount: float,
+    status: str,
+    external_id: str | None,
+) -> None:
+    """Write down what the provider did, trying a few times, and never raise.
+
+    The provider has already acted: failing here must not stop the caller from
+    finishing its own work (a refund that is not recorded must still close the
+    booking, or a retry refunds the provider a second time). A row that is still
+    missing after the retries is the ledger gap an error-level log points at.
+    """
+    for attempt in range(1, 4):
+        try:
+            await _record_payment(conn, booking_id, provider, amount, status, external_id)
+            return
+        except Exception as exc:
+            if attempt == 3:
+                log.error(
+                    "payment-unrecorded",
+                    booking_id=booking_id,
+                    status=status,
+                    amount=amount,
+                    external_id=external_id,
+                    error=str(exc),
+                )
+                return
+            await asyncio.sleep(0.05 * attempt)
 
 
 async def _record_payment(

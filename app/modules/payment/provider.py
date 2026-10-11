@@ -40,11 +40,22 @@ class PaymentProvider(ABC):
 
     @abstractmethod
     async def pay(self, booking_id: str, amount: float) -> PaymentResult:
-        """Charge the guest. Must be idempotent on booking_id."""
+        """Charge the guest. Must be idempotent on booking_id.
+
+        A booking whose charge was returned is closed (see payment.service), so a new
+        charge always arrives under a new booking_id.
+        """
         ...
 
     @abstractmethod
-    async def refund(self, booking_id: str, amount: float) -> PaymentResult: ...
+    async def refund(self, booking_id: str, amount: float) -> PaymentResult:
+        """Return a charge. Must be idempotent on booking_id.
+
+        The booking core writes the provider's answer down and does not repeat the call,
+        but a crash between the answer and that record can still repeat it; the provider
+        must then answer the first refund again instead of paying back twice.
+        """
+        ...
 
 
 class StubProvider(PaymentProvider):
