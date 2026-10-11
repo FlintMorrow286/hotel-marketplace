@@ -306,6 +306,28 @@ async def test_booking_lookup_unknown_code_is_404(committed_conn) -> None:
     assert response.status_code == 404, response.text
 
 
+@pytest.mark.asyncio
+async def test_availability_reflects_a_hold_at_once(committed_conn) -> None:
+    """The public read is never a cached copy: a hold shows on the very next request."""
+    from starlette.testclient import TestClient
+
+    from app.main import create_app
+
+    ut = await _seed_unit(committed_conn, "b6e@example.com")
+    stay_end = TODAY + dt.timedelta(days=2)
+    url = f"/v1/availability?unit_type_id={ut}&date_from={TODAY}&date_to={stay_end}"
+
+    with TestClient(create_app()) as client:
+        before = client.get(url).json()["days"]
+        await service.create_hold(
+            committed_conn, unit_type_id=ut, checkin=TODAY, checkout=stay_end, **_guest()
+        )
+        after = client.get(url).json()["days"]
+
+    assert [d["free"] for d in before] == [1, 1]
+    assert [d["free"] for d in after] == [0, 0]
+
+
 # ---------------------------------------------------------------- reaper
 
 

@@ -13,12 +13,8 @@ import asyncpg
 
 from app.config import legal
 from app.utils.logger import get_logger
-from app.utils.redis import get_redis
 
 log = get_logger(__name__)
-
-PRICE_CACHE_TTL_SEC = 60
-_PRICE_KEY = "prices:{rate_plan_id}:{from_iso}:{to_iso}"
 
 
 class ActivePlanExists(Exception):
@@ -101,8 +97,6 @@ async def set_prices(
         min_stay,
     )
     assert row is not None
-    await _invalidate(rate_plan_id)
-
     # Channels need to know a price changed so they can re-sync their tariffs.
     from app.modules.outbox import service as outbox_service
 
@@ -234,14 +228,3 @@ async def get_effective_price(conn: asyncpg.Connection, rate_plan_id: str, date:
         date,
     )
     return float(row["price"]) if row else 0.0
-
-
-async def _invalidate(rate_plan_id: str) -> None:
-    try:
-        redis = get_redis()
-        async for key in redis.scan_iter(match=f"prices:{rate_plan_id}:*"):
-            await redis.delete(key)
-    except RuntimeError:
-        pass  # Redis not initialised (unit tests)
-    except Exception as exc:
-        log.warning("price-cache-invalidate-failed", error=str(exc))

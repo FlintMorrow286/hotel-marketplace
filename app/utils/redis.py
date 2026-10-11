@@ -1,6 +1,7 @@
 """Redis client (async).
 
-Used for availability cache (Slice 2) and outbox queue (Slice 7).
+Used for the rate limiters. Nothing is cached in it: Postgres is the source
+of truth for availability and prices, and a stale copy would misquote both.
 """
 
 from __future__ import annotations

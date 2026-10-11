@@ -1,8 +1,9 @@
 """Inventory service.
 
 `inventory_day` is generated N days ahead per unit_type. The availability read
-is the hot path for the catalog/calendar, so it is Redis-cached with a short
-TTL and invalidated whenever inventory or bookings change.
+goes to Postgres every time: it is an indexed range read (about a millisecond
+for half a year of nights), and a cached copy would show a night as free or
+sold out for as long as it lived after a hold, a cancellation or a price change.
 """
 
 from __future__ import annotations
@@ -12,15 +13,11 @@ import datetime as dt
 import asyncpg
 
 from app.utils.logger import get_logger
-from app.utils.redis import get_redis
 
 log = get_logger(__name__)
 
 # Generate this many days ahead from "today".
 DEFAULT_HORIZON_DAYS = 730
-
-AVAIL_CACHE_TTL_SEC = 60
-_AVAIL_KEY = "avail:{unit_type_id}:{from_iso}:{to_iso}"
 
 
 async def ensure_inventory(
@@ -108,8 +105,6 @@ async def close_range(
         unit_type_id,
         closed,
     )
-    await _invalidate(unit_type_id)
-
     # A stop-sell change is exactly what a channel syncs availability for.
     from app.modules.outbox import service as outbox_service
 
@@ -153,24 +148,6 @@ async def get_availability(
     if date_to <= date_from:
         raise ValueError("date_to must be after date_from")
 
-    key = _AVAIL_KEY.format(
-        unit_type_id=unit_type_id,
-        from_iso=date_from.isoformat(),
-        to_iso=date_to.isoformat(),
-    )
-    try:
-        redis = get_redis()
-        cached = await redis.get(key)
-        if cached:
-            import json
-
-            return json.loads(cached)
-    except RuntimeError:
-        # Redis not initialised (unit tests): skip cache, serve from DB.
-        log.debug("avail-cache-skip-no-redis")
-    except Exception as exc:
-        log.warning("avail-cache-read-failed", error=str(exc))
-
     # The guest's total is the sum of these prices, so the availability read
     # has to carry one. price_day lives in the active rate plan; a day without
     # an explicit price falls back to the unit type's base price, exactly as
@@ -199,23 +176,4 @@ async def get_availability(
         date_from,
         date_to,
     )
-    out = [dict(r) for r in priced]
-
-    try:
-        import json
-
-        await get_redis().set(key, json.dumps(out), ex=AVAIL_CACHE_TTL_SEC)
-    except (RuntimeError, Exception) as exc:
-        log.debug("avail-cache-write-skipped", error=str(exc))
-
-    return out
-
-
-async def _invalidate(unit_type_id: str) -> None:
-    """Drop cached availability for a unit type (after close/booking change)."""
-    try:
-        redis = get_redis()
-        async for key in redis.scan_iter(match=f"avail:{unit_type_id}:*"):
-            await redis.delete(key)
-    except Exception as exc:
-        log.warning("avail-cache-invalidate-failed", error=str(exc))
+    return [dict(r) for r in priced]
