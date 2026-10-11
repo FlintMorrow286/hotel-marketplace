@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
@@ -101,9 +102,17 @@ class _Gate:
 _gates: dict[str, _Gate] = {}
 
 
+def _canonical_unit_key(unit_type_id: str) -> str:
+    try:
+        return str(uuid.UUID(unit_type_id))
+    except ValueError:
+        return unit_type_id.strip().casefold()
+
+
 @asynccontextmanager
 async def _local_turn(key: str, wait_sec: float) -> AsyncIterator[None]:
     """One request at a time per key inside this process, without holding a connection."""
+    key = _canonical_unit_key(key)
     gate = _gates.setdefault(key, _Gate())
     gate.users += 1
     try:
@@ -133,15 +142,16 @@ async def lock_unit(
     waited for inside it would be won on a stale snapshot and the winner's rows would
     still conflict. Polled rather than blocked on, so the wait has a bound.
     """
+    key = _canonical_unit_key(unit_type_id)
     deadline = time.monotonic() + wait_sec
-    while not await try_lock(conn, "hold", unit_type_id):
+    while not await try_lock(conn, "hold", key):
         if time.monotonic() >= deadline:
-            raise QueueTimeout(unit_type_id)
+            raise QueueTimeout(key)
         await asyncio.sleep(_QUEUE_POLL_SEC)
     try:
         yield
     finally:
-        await unlock(conn, "hold", unit_type_id)
+        await unlock(conn, "hold", key)
 
 
 @asynccontextmanager
@@ -154,15 +164,16 @@ async def unit_queue(
     queue of waiting guests never drains the pool; the advisory lock then orders the
     workers. Nothing slow belongs inside: no provider calls, no notifications.
     """
+    key = _canonical_unit_key(unit_type_id)
     deadline = time.monotonic() + wait_sec
-    async with _local_turn(unit_type_id, wait_sec):
+    async with _local_turn(key, wait_sec):
         try:
             conn = await pool.acquire(timeout=max(0.1, deadline - time.monotonic()))
         except TimeoutError as exc:
-            raise QueueTimeout(unit_type_id) from exc
+            raise QueueTimeout(key) from exc
         try:
             remaining = max(0.0, deadline - time.monotonic())
-            async with lock_unit(conn, unit_type_id, wait_sec=remaining):
+            async with lock_unit(conn, key, wait_sec=remaining):
                 yield conn
         finally:
             await pool.release(conn)
