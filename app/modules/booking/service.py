@@ -333,7 +333,9 @@ async def list_partner_bookings(
     """
     base = """
         SELECT b.id::text, b.code, b.status, b.total_amount::float8,
-               b.commission_rate::float8, b.commission_amt::float8,
+               b.commission_rate::float8,
+               CASE WHEN b.commission_status = 'void' THEN 0
+                    ELSE b.commission_amt::float8 END AS commission_amt,
                b.origin, b.source_channel,
                b.guest_name, b.guest_email, b.guest_phone,
                b.property_id::text, p.name AS property_name,
