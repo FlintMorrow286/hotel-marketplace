@@ -38,7 +38,7 @@ jobs:
           --health-retries 10
 
       redis:
-        # Availability caching and the rate limiters live in Redis.
+        # The rate limiters live in Redis.
         image: public.ecr.aws/docker/library/redis:7
         ports:
           - 6379:6379

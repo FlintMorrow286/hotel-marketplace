@@ -20,9 +20,21 @@ GOOD_SECRET = "k" * 40
 GOOD_SEAL_KEY = Fernet.generate_key().decode()
 
 
+# Every setting the checks read, at its shipped default. The process environment (CI sets
+# WEBHOOK_SEAL_KEY, the suite sets ALLOW_PRIVATE_TARGETS) must not decide what a test is about.
+_SHIPPED = {
+    "jwt_secret": DEFAULT_JWT_SECRET,
+    "webhook_seal_key": "",
+    "webhook_seal_key_previous": "",
+    "allow_private_targets": False,
+    "app_base_url": "http://localhost:8000",
+    "payment_mode": "stub",
+}
+
+
 def _settings(**overrides) -> Settings:
     # _env_file=None: the checks are about these values, not the developer's .env.
-    return Settings(_env_file=None, **overrides)
+    return Settings(_env_file=None, **{**_SHIPPED, **overrides})
 
 
 def _production(**overrides) -> Settings:
@@ -32,10 +44,6 @@ def _production(**overrides) -> Settings:
         "jwt_secret": GOOD_SECRET,
         "webhook_seal_key": GOOD_SEAL_KEY,
         "app_base_url": "https://hotels.example.com",
-        "payment_mode": "stub",
-        # The suite switches the guard off in the process environment; a production
-        # configuration is judged on what it says, not on that.
-        "allow_private_targets": False,
     }
     return _settings(**{**values, **overrides})
 
@@ -61,7 +69,7 @@ def test_forgetting_app_env_means_production(monkeypatch) -> None:
     the scope in the token, not an account.
     """
     monkeypatch.delenv("APP_ENV", raising=False)
-    s = _settings(jwt_secret=DEFAULT_JWT_SECRET)
+    s = _settings(jwt_secret=DEFAULT_JWT_SECRET)  # no app_env given: the default applies
 
     assert s.app_env == "production"
     with pytest.raises(ConfigError, match="JWT_SECRET"):
