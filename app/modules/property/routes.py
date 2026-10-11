@@ -78,7 +78,10 @@ async def update_my_property(
 ) -> PropertyOut:
     conn = await get_pool().acquire()
     try:
-        result = await service.update_property(conn, property_id, token.sub, data)
+        try:
+            result = await service.update_property(conn, property_id, token.sub, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         if result is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="property not found")
         return result
