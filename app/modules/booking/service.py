@@ -103,6 +103,30 @@ class Conflict(BookingError):
     """Idempotency-key collision with a different payload."""
 
 
+_OVER = ("cancelled", "failed", "refunded", "conflict", "no_show")
+
+
+async def _retire_if_over(conn: asyncpg.Connection, existing: asyncpg.Record) -> bool:
+    """Free the idempotency key of a web booking that has ended.
+
+    A booking is over when it was cancelled, refunded or failed, or when its hold has
+    run out and only the reaper's next sweep is missing (it is released here, exactly as
+    the reaper would). The key moves to `<key>#retired:<id>`: unique, and the old booking
+    stays traceable.
+    """
+    if existing["hold_lapsed"]:
+        await release_hold(conn, existing["id"])
+    elif existing["status"] not in _OVER:
+        return False
+    await conn.execute(
+        "UPDATE booking SET idempotency_key = idempotency_key || '#retired:' || id::text "
+        "WHERE id = $1",
+        existing["id"],
+    )
+    log.info("idempotency-key-retired", booking_id=existing["id"], code=existing["code"])
+    return True
+
+
 async def create_hold(
     conn: asyncpg.Connection,
     *,
@@ -133,11 +157,18 @@ async def create_hold(
             """
             SELECT id::text, code, status, total_amount, hold_expires_at,
                    checkin_date, checkout_date, unit_type_id::text,
-                   guest_name, guest_email, guest_phone
+                   guest_name, guest_email, guest_phone,
+                   (status = 'hold' AND hold_expires_at IS NOT NULL
+                    AND hold_expires_at <= now()) AS hold_lapsed
             FROM booking WHERE idempotency_key = $1
             """,
             idempotency_key,
         )
+        # The web client derives the key from the stay, so "book these dates again" looks
+        # like a retry. Only a retry of a booking that is still alive may replay it.
+        # A channel's key is the OTA's own booking reference and keeps its first answer.
+        if existing is not None and origin == "web" and await _retire_if_over(conn, existing):
+            existing = None
         if existing is not None:
             # The whole request must match, guest included: without the guest
             # in `same`, two different people on the same dates would replay
