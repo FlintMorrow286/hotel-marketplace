@@ -8,7 +8,7 @@ import ipaddress
 import socket
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
 
 import httpcore
@@ -32,6 +32,9 @@ class _ResolvedTarget(NamedTuple):
     host: str
     port: int
     address: str
+
+
+RedirectPolicy = Literal["same-origin", "any-origin"]
 
 
 _TRANSLATOR_PREFIXES = (
@@ -150,7 +153,11 @@ class _PinnedNetworkBackend(AsyncNetworkBackend):
         socket_options: Iterable[SOCKET_OPTION] | None = None,
     ) -> AsyncNetworkStream:
         target = self._target.get()
-        if target is None or host.casefold() != target.host.casefold() or port != target.port:
+        if (
+            target is None
+            or _canonical_host(host) != _canonical_host(target.host)
+            or port != target.port
+        ):
             raise httpcore.ConnectError("connection target has no validated address")
         return await self._backend.connect_tcp(
             target.address,
@@ -205,8 +212,11 @@ async def stream_request(
     max_redirects: int,
     headers: dict[str, str] | None = None,
     content: bytes | None = None,
+    redirect_policy: RedirectPolicy = "same-origin",
 ) -> AsyncIterator[httpx.Response]:
-    """Stream one request, validating and pinning every redirect without buffering it."""
+    """Stream a pinned request while enforcing the redirect policy without buffering."""
+    if redirect_policy not in {"same-origin", "any-origin"}:
+        raise ValueError("redirect_policy must be 'same-origin' or 'any-origin'")
     async with httpx.AsyncClient(
         transport=pinned_transport(),
         timeout=timeout,
@@ -220,10 +230,10 @@ async def stream_request(
             next_request = response.next_request
             if next_request is None:
                 break
-            if redirects >= max_redirects:
-                await response.aclose()
-                raise httpx.TooManyRedirects("Exceeded maximum allowed redirects.", request=request)
             await response.aclose()
+            _validate_redirect(request.url, next_request.url, redirect_policy)
+            if redirects >= max_redirects:
+                raise httpx.TooManyRedirects("Exceeded maximum allowed redirects.", request=request)
             request = next_request
             redirects += 1
 
@@ -231,6 +241,45 @@ async def stream_request(
             yield response
         finally:
             await response.aclose()
+
+
+def _canonical_host(host: str) -> str:
+    try:
+        return host.encode("idna").decode("ascii").casefold()
+    except UnicodeError:
+        return host.casefold()
+
+
+def _effective_port(url: httpx.URL) -> int:
+    if url.port is not None:
+        return url.port
+    return 443 if url.scheme == "https" else 80
+
+
+def _validate_redirect(
+    source: str | httpx.URL, target: str | httpx.URL, policy: RedirectPolicy
+) -> None:
+    source_url = _parse_url(source)
+    target_url = _parse_url(target)
+    if source_url.scheme == "https" and target_url.scheme == "http":
+        raise UnsafeUrl("redirect refused: HTTPS-to-HTTP downgrade is not allowed")
+    if policy == "any-origin":
+        return
+
+    same_host = _canonical_host(source_url.host) == _canonical_host(target_url.host)
+    source_port = _effective_port(source_url)
+    target_port = _effective_port(target_url)
+    if same_host and source_port == target_port:
+        return
+    if (
+        same_host
+        and source_url.scheme == "http"
+        and target_url.scheme == "https"
+        and source_port == 80
+        and target_port == 443
+    ):
+        return
+    raise UnsafeUrl("redirect refused: target must stay on the same host and port")
 
 
 def redact_url(url: str) -> str:

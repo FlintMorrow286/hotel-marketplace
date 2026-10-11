@@ -220,19 +220,29 @@ async def test_delivery_to_a_private_address_never_connects(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_a_redirect_into_the_private_network_is_not_followed(monkeypatch) -> None:
-    _resolving(monkeypatch, {"hooks.example": [PUBLIC_IP]})
+async def test_a_same_origin_redirect_with_a_private_dns_answer_is_not_followed(
+    monkeypatch,
+) -> None:
+    lookup_count = 0
+
+    async def resolve(host: str, port: int) -> list[str]:
+        nonlocal lookup_count
+        lookup_count += 1
+        return [PUBLIC_IP if lookup_count == 1 else "10.0.0.5"]
+
+    monkeypatch.setattr(netguard, "_resolve", resolve)
     requested: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested.append(str(request.url))
-        return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data/"})
+        return httpx.Response(302, headers={"Location": "https://hooks.example/next"})
 
     _mock_http(monkeypatch, handler)
 
     ok, _, error = await deliver.deliver("https://hooks.example/hook", "secret-secret", _event())
 
     assert ok is False and "non-public" in (error or "")
+    assert lookup_count == 2
     assert requested == ["https://hooks.example/hook"]
 
 
@@ -269,7 +279,7 @@ async def test_ical_fetch_refuses_private_addresses_and_redirects_into_them(monk
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested.append(str(request.url))
-        return httpx.Response(301, headers={"Location": "http://10.0.0.5/internal.ics"})
+        return httpx.Response(301, headers={"Location": "https://10.0.0.5/internal.ics"})
 
     _mock_http(monkeypatch, handler)
 

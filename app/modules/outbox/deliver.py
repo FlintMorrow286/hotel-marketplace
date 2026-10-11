@@ -56,6 +56,7 @@ async def deliver(url: str, secret: str, event: dict) -> tuple[bool, int | None,
                 max_redirects=MAX_REDIRECTS,
                 content=body,
                 headers=headers,
+                redirect_policy="same-origin",
             ) as response:
                 if 200 <= response.status_code < 300:
                     return True, response.status_code, None

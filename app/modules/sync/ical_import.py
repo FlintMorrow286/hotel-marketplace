@@ -202,6 +202,7 @@ async def _fetch(url: str) -> str:
                 timeout=FETCH_TIMEOUT_SEC,
                 max_redirects=3,
                 headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"},
+                redirect_policy="any-origin",
             ) as response:
                 response.raise_for_status()
                 body = bytearray()

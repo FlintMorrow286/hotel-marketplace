@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import socket
 import ssl
 from collections.abc import Iterable
 
+import httpcore
 import pytest
 from httpcore._backends.base import SOCKET_OPTION, AsyncNetworkBackend, AsyncNetworkStream
 
@@ -191,7 +193,11 @@ async def test_redirect_is_resolved_and_pinned_again(monkeypatch) -> None:
     _install_backend(monkeypatch, backend)
 
     async with netguard.stream_request(
-        "GET", "https://hooks.example/hook", timeout=2, max_redirects=1
+        "GET",
+        "https://hooks.example/hook",
+        timeout=2,
+        max_redirects=1,
+        redirect_policy="any-origin",
     ) as response:
         assert response.status_code == 204
 
@@ -201,6 +207,82 @@ async def test_redirect_is_resolved_and_pinned_again(monkeypatch) -> None:
         ["hooks.example"],
         ["redirect.example"],
     ]
+
+
+@pytest.mark.asyncio
+async def test_idn_host_connects_to_its_pinned_address_with_ascii_host(monkeypatch) -> None:
+    lookups: list[tuple[str, int]] = []
+
+    async def resolve(host: str, port: int) -> list[str]:
+        lookups.append((host, port))
+        return [PUBLIC_IP]
+
+    monkeypatch.setattr(netguard, "_resolve", resolve)
+    backend = _RecordingBackend([_response()])
+    _install_backend(monkeypatch, backend)
+
+    async with netguard.stream_request(
+        "GET", "https://BÜCHER.example/hook", timeout=2, max_redirects=0
+    ) as response:
+        assert response.status_code == 204
+
+    assert lookups == [("bücher.example", 443)]
+    assert backend.connections == [(PUBLIC_IP, 443)]
+    assert backend.streams[0].server_hostnames == ["xn--bcher-kva.example"]
+    assert b"host: xn--bcher-kva.example\r\n" in bytes(backend.streams[0].written).lower()
+
+
+@pytest.mark.asyncio
+async def test_getaddrinfo_receives_unicode_hostname(monkeypatch) -> None:
+    calls: list[tuple[str, int, int]] = []
+
+    def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        calls.append((host, port, type))
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (PUBLIC_IP, port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+
+    assert await netguard._resolve("bücher.example", 443) == [PUBLIC_IP]
+    assert calls == [("bücher.example", 443, socket.SOCK_STREAM)]
+
+
+@pytest.mark.asyncio
+async def test_trailing_dot_hostname_remains_significant(monkeypatch) -> None:
+    """Trailing-dot FQDNs remain distinct and are matched with their trailing dot."""
+    lookups: list[tuple[str, int]] = []
+
+    async def resolve(host: str, port: int) -> list[str]:
+        lookups.append((host, port))
+        return [PUBLIC_IP]
+
+    monkeypatch.setattr(netguard, "_resolve", resolve)
+    backend = _RecordingBackend([_response()])
+    _install_backend(monkeypatch, backend)
+
+    async with netguard.stream_request(
+        "GET", "https://Example.COM./hook", timeout=2, max_redirects=0
+    ) as response:
+        assert response.status_code == 204
+
+    assert lookups == [("example.com.", 443)]
+    assert backend.connections == [(PUBLIC_IP, 443)]
+    assert backend.streams[0].server_hostnames == ["example.com."]
+    assert b"host: example.com.\r\n" in bytes(backend.streams[0].written).lower()
+
+
+@pytest.mark.asyncio
+async def test_pinned_backend_refuses_a_different_host() -> None:
+    target: contextvars.ContextVar[netguard._ResolvedTarget | None] = contextvars.ContextVar(
+        "pinned-target", default=None
+    )
+    target.set(netguard._ResolvedTarget("hooks.example", 443, PUBLIC_IP))
+    backend = _RecordingBackend([_response()])
+    guarded = netguard._PinnedNetworkBackend(target, backend)
+
+    with pytest.raises(httpcore.ConnectError, match="no validated address"):
+        await guarded.connect_tcp("other.example", 443)
+
+    assert backend.connections == []
 
 
 def test_redacted_url_drops_userinfo_query_and_fragment() -> None:
