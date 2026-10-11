@@ -57,6 +57,13 @@ def _is_legacy_digest(value: str) -> bool:
     return len(value) == _LEGACY_HEX_LEN and all(c in _HEX for c in value)
 
 
+def _verify_dummy(raw: str) -> None:
+    try:
+        _hasher.verify(_DUMMY_PASSWORD_HASH, raw)
+    except (VerificationError, ValueError):
+        pass
+
+
 def hash_secret(raw: str) -> str:
     """Hash a password or API key with argon2id.
 
@@ -72,7 +79,10 @@ def verify_secret(raw: str, stored: str) -> bool:
     to do with a legacy hit (re-hash it, see needs_rehash).
     """
     if _is_legacy_digest(stored):
-        return hmac.compare_digest(hashlib.sha256(raw.encode()).hexdigest(), stored)
+        matched = hmac.compare_digest(hashlib.sha256(raw.encode()).hexdigest(), stored)
+        if not matched:
+            _verify_dummy(raw)
+        return matched
     try:
         return _hasher.verify(stored, raw)
     except VerifyMismatchError:
@@ -81,6 +91,7 @@ def verify_secret(raw: str, stored: str) -> bool:
         # A malformed or truncated hash column is not something to paper over:
         # treat it as a failed login, and let the caller's audit trail see it.
         log.warning("malformed-hash-verify")
+        _verify_dummy(raw)
         return False
 
 
