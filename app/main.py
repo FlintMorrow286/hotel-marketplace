@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from app.config.checks import check_config
 from app.config.settings import settings
@@ -186,28 +187,36 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/readyz", tags=["health"])
-    async def readyz() -> dict:
-        """Readiness probe — checks DB + Redis are reachable."""
+    async def readyz() -> JSONResponse:
+        """Readiness probe: the database and Redis answer.
+
+        503 when one does not, so a load balancer or a container healthcheck sees it (it
+        used to answer 200 "degraded", which no healthcheck can tell from healthy). The cause
+        goes to the log; an anonymous caller gets "error", not the exception text.
+        """
         from app.db.pool import get_pool
         from app.utils.redis import get_redis
 
-        checks: dict = {}
-        try:
-            pool = get_pool()
-            await pool.execute("SELECT 1")
-            checks["db"] = "ok"
-        except Exception as exc:
-            checks["db"] = f"error: {exc}"
+        async def db() -> None:
+            await get_pool().execute("SELECT 1")
 
-        try:
-            redis = get_redis()
-            await redis.ping()
-            checks["redis"] = "ok"
-        except Exception as exc:
-            checks["redis"] = f"error: {exc}"
+        async def redis() -> None:
+            await get_redis().ping()
+
+        checks: dict[str, str] = {}
+        for name, probe in (("db", db), ("redis", redis)):
+            try:
+                await probe()
+                checks[name] = "ok"
+            except Exception as exc:
+                log.warning("readyz-check-failed", check=name, error=str(exc))
+                checks[name] = "error"
 
         ok = all(v == "ok" for v in checks.values())
-        return {"status": "ok" if ok else "degraded", "checks": checks}
+        return JSONResponse(
+            {"status": "ok" if ok else "degraded", "checks": checks},
+            status_code=200 if ok else 503,
+        )
 
     # SPA fallback — registered LAST, so it can never shadow the API.
     if static_dir.is_dir():
