@@ -322,19 +322,20 @@ async def record_delivery(
         status_code,
         error,
     )
-    if result != "UPDATE 0":
-        return
-    await conn.execute(
-        """
-        INSERT INTO webhook_delivery (event_id, subscription_id, status, status_code, error)
-        VALUES ($1, $2, $3, $4, left($5, 500))
-        """,
-        event_id,
-        subscription_id,
-        delivery_status,
-        status_code,
-        error,
-    )
+    if result == "UPDATE 0":
+        await conn.execute(
+            """
+            INSERT INTO webhook_delivery (event_id, subscription_id, status, status_code, error)
+            VALUES ($1, $2, $3, $4, left($5, 500))
+            """,
+            event_id,
+            subscription_id,
+            delivery_status,
+            status_code,
+            error,
+        )
+    # The subscription's own status follows every attempt, a retry included: a receiver that
+    # recovered must stop reading "failed" in the partner's cabinet.
     await conn.execute(
         """
         UPDATE webhook_subscription
