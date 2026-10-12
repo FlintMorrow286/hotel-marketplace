@@ -303,18 +303,46 @@ async def create_hold(
 
 
 async def release_hold(conn: asyncpg.Connection, booking_id: str) -> None:
-    """Return hold inventory to the pool and mark the booking cancelled."""
+    """Return hold inventory to the pool and mark the booking cancelled.
+
+    Safe against a second release or a confirmation of the same booking: the nights are locked before the
+    status is read, in the order `_confirm` and `create_hold` lock them, so the later of two transactions
+    sees what the earlier one left. The reaper runs READ COMMITTED, where a status read first is stale.
+    """
     booking = await conn.fetchrow(
         """
         SELECT b.unit_type_id::text, b.property_id::text, b.code,
-               b.checkin_date, b.checkout_date, b.status
+               b.checkin_date, b.checkout_date
         FROM booking b WHERE b.id = $1
         """,
         booking_id,
     )
     if booking is None:
         return
-    if booking["status"] not in ("hold", "failed"):
+
+    await conn.fetch(
+        """
+        SELECT 1 FROM inventory_day
+        WHERE unit_type_id = $1 AND date >= $2 AND date < $3
+        ORDER BY date
+        FOR UPDATE
+        """,
+        booking["unit_type_id"],
+        booking["checkin_date"],
+        booking["checkout_date"],
+    )
+    status = await conn.fetchval("SELECT status FROM booking WHERE id = $1", booking_id)
+    if status not in ("hold", "failed"):
+        return
+    claimed = await conn.fetchval(
+        """
+        UPDATE booking SET status = 'cancelled', cancelled_at = now()
+        WHERE id = $1 AND status IN ('hold', 'failed')
+        RETURNING true
+        """,
+        booking_id,
+    )
+    if not claimed:
         return
 
     await conn.executemany(
@@ -325,10 +353,6 @@ async def release_hold(conn: asyncpg.Connection, booking_id: str) -> None:
           AND hold > 0
         """,
         [(booking["unit_type_id"], booking["checkin_date"], booking["checkout_date"])],
-    )
-    await conn.execute(
-        "UPDATE booking SET status = 'cancelled', cancelled_at = now() WHERE id = $1",
-        booking_id,
     )
 
     from app.modules.outbox import service as outbox_service
@@ -344,7 +368,7 @@ async def release_hold(conn: asyncpg.Connection, booking_id: str) -> None:
             "unit_type_id": booking["unit_type_id"],
             "checkin_date": booking["checkin_date"].isoformat(),
             "checkout_date": booking["checkout_date"].isoformat(),
-            "expired": booking["status"] == "hold",
+            "expired": status == "hold",
         },
         property_id=booking["property_id"],
     )
