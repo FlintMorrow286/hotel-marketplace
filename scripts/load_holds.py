@@ -123,7 +123,19 @@ async def main() -> int:
     parser.add_argument("--units", type=int, default=1, help="units in the room")
     parser.add_argument("--nights", type=int, default=2)
     parser.add_argument("--keep", action="store_true", help="leave the throwaway rows")
+    parser.add_argument(
+        "--allow-any-database",
+        action="store_true",
+        help="run although APP_ENV is not local/dev/test",
+    )
     args = parser.parse_args()
+    if not settings.is_dev and not args.allow_any_database:
+        print(
+            f"refusing to create a throwaway room: APP_ENV={settings.app_env!r} is not a "
+            "development environment; pass --allow-any-database to do it anyway",
+            file=sys.stderr,
+        )
+        return 2
 
     conn = await asyncpg.connect(settings.database_url)
     partner_id, property_id, unit_type_id = await _seed(conn, args.units, args.nights)

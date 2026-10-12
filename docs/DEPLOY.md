@@ -56,6 +56,24 @@ Create a database dump and copy the photo directory to a separate backup locatio
 
 Back up both data sets on a schedule and test restores before relying on them. A database dump does not include uploaded photos.
 
+## Checking a running system
+
+- `scripts/check_invariants.py` is read-only (one REPEATABLE READ snapshot) and safe against production:
+  no hold or sold count that disagrees with the bookings behind it, no charge without a booking or a
+  return, no refund made twice, commission and outbox events that match the booking states, and a
+  warning when the hold reaper is behind. Exit status 1 means a violation; `--json` for a scheduler.
+  Run it from cron and alert on a non-zero exit. `--self-test` proves the checker itself.
+- `scripts/chaos_bookings.py` seeds random guests, a reaper, stop-sells and (in `inproc` mode) a
+  payment provider that fails on purpose, then runs the checker. It writes fake data: it refuses a
+  database whose name does not contain chaos, test, scratch or tmp. Use a throwaway database.
+- `scripts/load_holds.py` fires N simultaneous holds at a running server on a room it creates and
+  removes (`--n 100 --units 1` must give one 201 and 99 409s). It refuses when `APP_ENV` is not a
+  development environment.
+- The log events that need a human are listed in `docs/ARCHITECTURE.md` section 4.8
+  (`charge-not-returned`, `payment-unrecorded`, `outbox-emit-failed`, ...).
+- `/readyz` answers 503 when the database or Redis is down, which is what the container healthchecks
+  use; `/healthz` is liveness only.
+
 ## Not verified
 
 - Docker is not installed in the development sandbox, so the image was not built and the Compose stack was not started.
