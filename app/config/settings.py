@@ -8,7 +8,7 @@ import os
 import urllib.parse
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -34,12 +34,19 @@ class Settings(BaseSettings):
     )
 
     # ----- App -----
-    app_env: str = Field(default="local")
+    # Production unless said otherwise: a deploy that forgets APP_ENV must not run on
+    # the placeholder JWT secret. .env.example sets local for development.
+    app_env: str = Field(default="production")
     app_host: str = Field(default="0.0.0.0")
     app_port: int = Field(default=8000)
     # Public origin used to build URLs handed to partners (iCal feeds, links).
     app_base_url: str = Field(default="http://localhost:8000")
     log_level: str = Field(default="info")
+    # Run in-process pollers only in the dedicated jobs process when scaling web workers.
+    run_background_jobs: bool = Field(default=True)
+    # Swagger UI, ReDoc and /openapi.json. Unset: on while developing, off in production, where
+    # they would publish the whole endpoint list and the page loads its scripts from a CDN.
+    api_docs: bool | None = Field(default=None)
 
     # ----- Database -----
     database_url: str = "postgresql://hotel_user:hotel_pass@localhost:5432/hotel_mp"
@@ -72,6 +79,28 @@ class Settings(BaseSettings):
     webhook_rate_per_sec: int = Field(default=10)
     # How often the outbox worker claims a batch. Exposed for tests.
     outbox_poll_interval_sec: int = Field(default=15)
+
+    # ----- Request bodies -----
+    # The most a request body may carry (a photo upload gets photo_max_bytes plus framing).
+    # Checked before the body is parsed or spooled to disk.
+    max_body_bytes: int = Field(default=1024 * 1024)
+
+    # ----- Public endpoints that take guesses -----
+    # Attempts per client address per window; one account or booking code gets
+    # 3x that across all addresses (app/utils/ratelimit_http.py). Raise them if
+    # many users legitimately share an address; 0 blocks the endpoint outright.
+    login_limit_per_min: int = Field(default=10)
+    register_limit_per_min: int = Field(default=5)
+    lookup_limit_per_min: int = Field(default=10)
+
+    # ----- Public and partner endpoints that are expensive, not guessable -----
+    # Per client address per window. A hold takes inventory for 15 minutes, so unthrottled
+    # one script could lock every room; the others cost a wide query, a decode or an HTTP fetch.
+    hold_limit_per_min: int = Field(default=20)
+    availability_limit_per_min: int = Field(default=120)
+    search_limit_per_min: int = Field(default=240)
+    photo_upload_limit_per_min: int = Field(default=20)
+    ical_sync_limit_per_min: int = Field(default=6)
 
     # ----- Outbox backlog limit -----
     # A mass operation (bulk price load, an iCal import of a whole season) can
@@ -110,6 +139,12 @@ class Settings(BaseSettings):
     # The outgoing key, readable only. Empty except during a rotation.
     webhook_seal_key_previous: str = Field(default="")
 
+    # ----- URLs partners control -----
+    # Webhook receivers and iCal feeds are requested by our servers. Private,
+    # loopback and link-local addresses are refused (app/utils/netguard.py)
+    # unless this is on, which is for a developer pointing a webhook at localhost.
+    allow_private_targets: bool = Field(default=False)
+
     # ----- Webhook delivery retention -----
     # webhook_delivery is partitioned by delivered_at, one partition a month,
     # and ages out on a schedule (app/modules/outbox/retention.py) — never in
@@ -141,6 +176,10 @@ class Settings(BaseSettings):
     photo_max_bytes: int = Field(default=10 * 1024 * 1024)
     photo_max_per_property: int = Field(default=12)
     # Long edge of the stored full size; the card/thumb pair is generated next.
+    # A decoded RGB image costs 3 bytes a pixel, twice over while it is converted and resized: a
+    # 165 KB PNG of 170 megapixels took 8 s and ~0.9 GiB of a worker. Above this it is refused
+    # before it is decoded. 40 MP covers every phone camera (8000 x 5000).
+    photo_max_pixels: int = Field(default=40_000_000)
     photo_max_dimension: int = Field(default=1920)
     photo_thumb_width: int = Field(default=800)
 
@@ -150,9 +189,19 @@ class Settings(BaseSettings):
     # ----- Sentry -----
     sentry_dsn: str = Field(default="")
 
+    @field_validator("api_docs", mode="before")
+    @classmethod
+    def _blank_api_docs_is_unset(cls, value: object) -> object:
+        # Compose passes API_DOCS through even when the operator never set it.
+        return None if isinstance(value, str) and not value.strip() else value
+
     @property
     def is_dev(self) -> bool:
         return self.app_env in ("local", "dev", "test")
+
+    @property
+    def docs_enabled(self) -> bool:
+        return self.is_dev if self.api_docs is None else self.api_docs
 
     @property
     def project_root(self) -> Path:

@@ -6,6 +6,7 @@ import type { RatePlan, UnitTypeOut } from "@/api/types";
 import { humanError } from "@/utils/errors";
 import { plural } from "@/utils/plural";
 import { daysBetween } from "@/utils/date";
+import { formatPrice } from "@/utils/format";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
@@ -86,7 +87,7 @@ function PriceEditor({ unitType }: { unitType: UnitTypeOut }) {
       {plan ? (
         <>
           <SetPriceForm unitType={unitType} plan={plan} />
-          <CommissionField unitTypeId={unitType.id} plan={plan} />
+          <CommissionNote plan={plan} />
         </>
       ) : (
         <div className="flex flex-wrap items-center gap-4">
@@ -202,7 +203,7 @@ function SetPriceForm({
         <p className="text-sm text-text-secondary">
           {nights}{" "}
           {plural(nights, "ночь", "ночи", "ночей")} · итого{" "}
-          {(nights * price).toFixed(0)} ₽
+          {formatPrice(nights * price)}
         </p>
       ) : (
         <p className="text-sm text-feedback-error-text">
@@ -233,76 +234,20 @@ function SetPriceForm({
 }
 
 /**
- * The platform's commission share for the nights this plan prices.
+ * The platform's commission share for the nights this plan prices, as the partner sees it.
  *
- * `null` (the default) means the platform-wide rate applies; the partner sets
- * an explicit share to discount a key object. The booking snapshots the rate
- * at hold time, so a change only affects future stays.
+ * Read only: the share is the platform's revenue, so staff set it (PATCH
+ * /v1/admin/rate-plans/{id}). `null` means the platform-wide rate applies. The booking
+ * snapshots the rate at hold time, so a change only affects future stays.
  */
-function CommissionField({
-  unitTypeId,
-  plan,
-}: {
-  unitTypeId: string;
-  plan: RatePlan;
-}) {
-  const queryClient = useQueryClient();
-  const [rate, setRate] = useState<string>(
-    plan.commission_rate == null ? "" : String(plan.commission_rate * 100),
-  );
-
-  const patch = useMutation({
-    mutationFn: () => {
-      const n = Number(rate);
-      return partner.ratePlans.patch(plan.id, {
-        commission_rate: rate === "" || Number.isNaN(n) ? null : n / 100,
-      });
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["rate-plans", unitTypeId] });
-    },
-  });
-
+function CommissionNote({ plan }: { plan: RatePlan }) {
   return (
-    <form
-      className="mt-5 border-t border-border-default pt-5"
-      onSubmit={(e) => {
-        e.preventDefault();
-        patch.mutate();
-      }}
-    >
-      <div className="flex flex-wrap items-end gap-3">
-        <Input
-          label="Комиссия платформы, %"
-          type="number"
-          min={0}
-          max={100}
-          step={1}
-          value={rate}
-          placeholder="по умолчанию"
-          onChange={(e) => setRate(e.target.value)}
-          className="w-44"
-        />
-        <Button type="submit" variant="secondary" size="sm" loading={patch.isPending}>
-          Применить
-        </Button>
-        <p className="text-sm text-text-tertiary">
-          {plan.commission_rate == null
-            ? "Сейчас действует ставка платформы по умолчанию."
-            : `Действует ${plan.commission_rate * 100}% с каждой брони.`}
-        </p>
-      </div>
-      {patch.isError ? (
-        <p role="alert" className="mt-3 text-sm text-feedback-error-text">
-          {humanError(patch.error, "Не удалось сохранить комиссию. Попробуйте ещё раз.")}
-        </p>
-      ) : null}
-      {patch.isSuccess ? (
-        <p role="status" className="mt-3 text-sm text-feedback-success-text">
-          Ставка применена к новым броням.
-        </p>
-      ) : null}
-    </form>
+    <p className="mt-5 border-t border-border-default pt-5 text-sm text-text-tertiary">
+      {plan.commission_rate == null
+        ? "Комиссия платформы: ставка по умолчанию."
+        : `Комиссия платформы: ${plan.commission_rate * 100}% с каждой брони.`}{" "}
+      Ставку задаёт платформа.
+    </p>
   );
 }
 

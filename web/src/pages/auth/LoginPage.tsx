@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { PageShell } from "@/components/PageShell";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { isTooManyAttempts, TOO_MANY_ATTEMPTS } from "@/utils/errors";
 
 /**
  * Partner login. On success the token lands in localStorage and the query
@@ -41,7 +42,12 @@ export function LoginPage() {
       queryClient.clear();
       navigate(from, { replace: true });
     },
-    onError: () => setError("Неверный email или пароль. Попробуйте ещё раз."),
+    onError: (exc) =>
+      setError(
+        isTooManyAttempts(exc)
+          ? TOO_MANY_ATTEMPTS
+          : "Неверный email или пароль. Попробуйте ещё раз.",
+      ),
   });
 
   // Already signed in - no point showing the form.
@@ -103,12 +109,15 @@ export function LoginPage() {
         </Button>
       </form>
 
-      <p className="mt-6 text-center text-xs text-text-secondary">
-        Демо-доступ: demo@example.com / demo-password
-      </p>
+      {/* Seeded demo logins are for a developer's machine, never a production build. */}
+      {import.meta.env.DEV ? (
+        <p className="mt-6 text-center text-xs text-text-secondary">
+          Демо-доступ: demo@example.com / demo-password
+        </p>
+      ) : null}
       <p className="mt-3 text-center text-xs text-text-secondary">
         Нет аккаунта?{" "}
-        <Link to="/register" className="text-text-link hover:text-text-link-hover">
+        <Link to="/register" className="inline-flex min-h-10 items-center text-text-link hover:text-text-link-hover">
           Зарегистрироваться
         </Link>
       </p>

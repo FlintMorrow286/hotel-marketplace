@@ -20,12 +20,21 @@ from app.modules.booking import service
 from app.modules.booking.service import Conflict, NotAvailable
 from app.modules.property import service as property_service
 from app.modules.property.schemas import PropertyCreate
+from app.utils.tz import today_at
 
-TODAY = dt.date.today()
+# The date at the properties these tests create (Europe/Simferopol, the default). It is the
+# server's date plus one from 21:00 to 24:00 UTC, and a web hold for an earlier date is refused.
+TODAY = today_at("Europe/Simferopol")
 
 
-async def _seed_unit(conn: asyncpg.Connection, email: str, total_units: int = 1) -> str:
-    """Create partner + property + unit_type + 30 days of inventory."""
+async def _seed_unit(
+    conn: asyncpg.Connection, email: str, total_units: int = 1, *, published: bool = False
+) -> str:
+    """Create partner + property + unit_type + 30 days of inventory.
+
+    The property is a draft unless `published`: the public API (HTTP hold, availability) serves
+    only published properties, the service and the channel take drafts by id.
+    """
     partner_id = await auth_service.register_partner(
         conn, PartnerRegisterRequest(email=email, password="secret123", name="Tester")
     )
@@ -50,6 +59,8 @@ async def _seed_unit(conn: asyncpg.Connection, email: str, total_units: int = 1)
         total_units,
         TODAY,
     )
+    if published:
+        await conn.execute("UPDATE property SET status = 'published' WHERE id = $1", prop.id)
     return row["id"]
 
 
@@ -231,27 +242,37 @@ async def test_idempotency_same_key_other_guest_is_conflict(db_conn) -> None:
         )
 
 
-@pytest.mark.asyncio
-async def test_booking_by_code_roundtrip(committed_conn) -> None:
-    """The guest knows the BK-XXXXXX code, never the id.
-
-    A lowercase typed code still finds the booking: the lookup normalises.
-    """
-    from starlette.testclient import TestClient
-
-    from app.main import create_app
-
-    ut = await _seed_unit(committed_conn, "b6c@example.com")
+async def _lookup_fixture(committed_conn, email: str) -> tuple[dict, dict]:
+    """A committed hold and the guest who made it."""
+    ut = await _seed_unit(committed_conn, email)
+    guest = _guest()
     hold = await service.create_hold(
         committed_conn,
         unit_type_id=ut,
         checkin=TODAY,
         checkout=TODAY + dt.timedelta(days=2),
-        **_guest(),
+        **guest,
     )
+    return hold, guest
+
+
+@pytest.mark.asyncio
+async def test_booking_lookup_roundtrip(committed_conn) -> None:
+    """The guest knows the BK-XXXXXX code and the booking's email, never the id.
+
+    A lowercase typed code or email still finds the booking: both are normalised.
+    """
+    from starlette.testclient import TestClient
+
+    from app.main import create_app
+
+    hold, guest = await _lookup_fixture(committed_conn, "b6c@example.com")
 
     with TestClient(create_app()) as client:
-        response = client.get(f"/v1/bookings/by-code/{hold['code'].lower()}")
+        response = client.post(
+            "/v1/bookings/lookup",
+            json={"code": hold["code"].lower(), "email": guest["guest_email"].upper()},
+        )
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -261,15 +282,61 @@ async def test_booking_by_code_roundtrip(committed_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_booking_by_code_unknown_is_404(committed_conn) -> None:
+async def test_booking_lookup_needs_the_booking_email(committed_conn) -> None:
+    """The code alone must not hand out the booking id, which cancels and refunds."""
+    from starlette.testclient import TestClient
+
+    from app.main import create_app
+
+    hold, _ = await _lookup_fixture(committed_conn, "b6d@example.com")
+
+    with TestClient(create_app()) as client:
+        wrong_email = client.post(
+            "/v1/bookings/lookup", json={"code": hold["code"], "email": "someone@else.example"}
+        )
+        no_email = client.post("/v1/bookings/lookup", json={"code": hold["code"]})
+        old_route = client.get(f"/v1/bookings/by-code/{hold['code']}")
+
+    assert wrong_email.status_code == 404, wrong_email.text
+    assert hold["id"] not in wrong_email.text
+    assert no_email.status_code == 422, no_email.text
+    assert hold["id"] not in old_route.text
+
+
+@pytest.mark.asyncio
+async def test_booking_lookup_unknown_code_is_404(committed_conn) -> None:
     from starlette.testclient import TestClient
 
     from app.main import create_app
 
     with TestClient(create_app()) as client:
-        response = client.get("/v1/bookings/by-code/BK-NOPE00")
+        response = client.post(
+            "/v1/bookings/lookup", json={"code": "BK-NOPE00", "email": "nobody@example.com"}
+        )
 
     assert response.status_code == 404, response.text
+
+
+@pytest.mark.asyncio
+async def test_availability_reflects_a_hold_at_once(committed_conn) -> None:
+    """The public read is never a cached copy: a hold shows on the very next request."""
+    from starlette.testclient import TestClient
+
+    from app.main import create_app
+
+    ut = await _seed_unit(committed_conn, "b6e@example.com", published=True)
+    stay_end = TODAY + dt.timedelta(days=2)
+    url = f"/v1/availability?unit_type_id={ut}&date_from={TODAY}&date_to={stay_end}"
+
+    with TestClient(create_app()) as client:
+        before = client.get(url).json()["days"]
+        await service.create_hold(
+            committed_conn, unit_type_id=ut, checkin=TODAY, checkout=stay_end, **_guest()
+        )
+        after = client.get(url).json()["days"]
+
+    assert [d["free"] for d in before] == [1, 1]
+    assert [d["free"] for d in after] == [0, 0]
 
 
 # ---------------------------------------------------------------- reaper

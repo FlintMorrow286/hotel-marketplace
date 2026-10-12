@@ -19,6 +19,7 @@ import asyncpg
 from app.config.settings import settings
 from app.modules.rate import service as rate_service
 from app.utils.logger import get_logger
+from app.utils.tz import today_at
 
 log = get_logger(__name__)
 
@@ -103,6 +104,30 @@ class Conflict(BookingError):
     """Idempotency-key collision with a different payload."""
 
 
+_OVER = ("cancelled", "failed", "refunded", "conflict", "no_show")
+
+
+async def _retire_if_over(conn: asyncpg.Connection, existing: asyncpg.Record) -> bool:
+    """Free the idempotency key of a web booking that has ended.
+
+    A booking is over when it was cancelled, refunded or failed, or when its hold has
+    run out and only the reaper's next sweep is missing (it is released here, exactly as
+    the reaper would). The key moves to `<key>#retired:<id>`: unique, and the old booking
+    stays traceable.
+    """
+    if existing["hold_lapsed"]:
+        await release_hold(conn, existing["id"])
+    elif existing["status"] not in _OVER:
+        return False
+    await conn.execute(
+        "UPDATE booking SET idempotency_key = idempotency_key || '#retired:' || id::text "
+        "WHERE id = $1",
+        existing["id"],
+    )
+    log.info("idempotency-key-retired", booking_id=existing["id"], code=existing["code"])
+    return True
+
+
 async def create_hold(
     conn: asyncpg.Connection,
     *,
@@ -114,11 +139,13 @@ async def create_hold(
     guest_phone: str,
     idempotency_key: str | None = None,
     origin: str = "web",
+    published_only: bool = False,
 ) -> dict:
     """Reserve inventory for the stay and return the new hold booking.
 
     Raises NotAvailable when there is no free inventory, Conflict when the
-    idempotency key is reused with different request data.
+    idempotency key is reused with different request data. `published_only` is
+    the public API's view: a property the catalog does not show takes no booking.
 
     The caller is responsible for the transaction; tests wrap this in a
     rolled-back transaction, the route wraps it in a committed one.
@@ -133,11 +160,18 @@ async def create_hold(
             """
             SELECT id::text, code, status, total_amount, hold_expires_at,
                    checkin_date, checkout_date, unit_type_id::text,
-                   guest_name, guest_email, guest_phone
+                   guest_name, guest_email, guest_phone,
+                   (status = 'hold' AND hold_expires_at IS NOT NULL
+                    AND hold_expires_at <= now()) AS hold_lapsed
             FROM booking WHERE idempotency_key = $1
             """,
             idempotency_key,
         )
+        # The web client derives the key from the stay, so "book these dates again" looks
+        # like a retry. Only a retry of a booking that is still alive may replay it.
+        # A channel's key is the OTA's own booking reference and keeps its first answer.
+        if existing is not None and origin == "web" and await _retire_if_over(conn, existing):
+            existing = None
         if existing is not None:
             # The whole request must match, guest included: without the guest
             # in `same`, two different people on the same dates would replay
@@ -157,11 +191,31 @@ async def create_hold(
 
     # ---- unit type + price
     ut = await conn.fetchrow(
-        "SELECT id::text, property_id::text, base_price, total_units FROM unit_type WHERE id = $1",
+        """
+        SELECT ut.id::text, ut.property_id::text, ut.base_price, ut.total_units, p.timezone,
+               p.status AS property_status
+        FROM unit_type ut
+        JOIN property p ON p.id = ut.property_id
+        WHERE ut.id = $1
+        """,
         unit_type_id,
     )
     if ut is None:
         raise NotAvailable("unit type not found")
+    # Inventory rows for past nights stay in the table, so without this a guest could hold
+    # and pay for a stay that has already happened. "Today" is the property's: a guest may
+    # book the night that is still today there. A channel pushes what an OTA already sold,
+    # which can be a stay already under way, so only the web path is held to it.
+    if origin == "web" and checkin < today_at(ut["timezone"]):
+        raise NotAvailable("check-in date is in the past")
+    # Staff blocked this property: the catalog no longer shows it, but its unit type ids are
+    # still known to guests with an old link, and the block has to stop the money too.
+    if origin == "web" and ut["property_status"] == "blocked":
+        raise NotAvailable("property is not available for booking")
+    # A draft or a property awaiting moderation keeps valid unit type ids too; the public API
+    # takes bookings only where the catalog shows the property.
+    if published_only and ut["property_status"] != "published":
+        raise NotAvailable("property is not available for booking")
 
     # ---- lock inventory rows, ordered by (unit_type_id, date)
     locked = await _load_or_lock_inventory(conn, unit_type_id, checkin, checkout)
@@ -249,18 +303,46 @@ async def create_hold(
 
 
 async def release_hold(conn: asyncpg.Connection, booking_id: str) -> None:
-    """Return hold inventory to the pool and mark the booking cancelled."""
+    """Return hold inventory to the pool and mark the booking cancelled.
+
+    Safe against a second release or a confirmation of the same booking: the nights are locked before the
+    status is read, in the order `_confirm` and `create_hold` lock them, so the later of two transactions
+    sees what the earlier one left. The reaper runs READ COMMITTED, where a status read first is stale.
+    """
     booking = await conn.fetchrow(
         """
         SELECT b.unit_type_id::text, b.property_id::text, b.code,
-               b.checkin_date, b.checkout_date, b.status
+               b.checkin_date, b.checkout_date
         FROM booking b WHERE b.id = $1
         """,
         booking_id,
     )
     if booking is None:
         return
-    if booking["status"] not in ("hold", "failed"):
+
+    await conn.fetch(
+        """
+        SELECT 1 FROM inventory_day
+        WHERE unit_type_id = $1 AND date >= $2 AND date < $3
+        ORDER BY date
+        FOR UPDATE
+        """,
+        booking["unit_type_id"],
+        booking["checkin_date"],
+        booking["checkout_date"],
+    )
+    status = await conn.fetchval("SELECT status FROM booking WHERE id = $1", booking_id)
+    if status not in ("hold", "failed"):
+        return
+    claimed = await conn.fetchval(
+        """
+        UPDATE booking SET status = 'cancelled', cancelled_at = now()
+        WHERE id = $1 AND status IN ('hold', 'failed')
+        RETURNING true
+        """,
+        booking_id,
+    )
+    if not claimed:
         return
 
     await conn.executemany(
@@ -271,10 +353,6 @@ async def release_hold(conn: asyncpg.Connection, booking_id: str) -> None:
           AND hold > 0
         """,
         [(booking["unit_type_id"], booking["checkin_date"], booking["checkout_date"])],
-    )
-    await conn.execute(
-        "UPDATE booking SET status = 'cancelled', cancelled_at = now() WHERE id = $1",
-        booking_id,
     )
 
     from app.modules.outbox import service as outbox_service
@@ -290,7 +368,7 @@ async def release_hold(conn: asyncpg.Connection, booking_id: str) -> None:
             "unit_type_id": booking["unit_type_id"],
             "checkin_date": booking["checkin_date"].isoformat(),
             "checkout_date": booking["checkout_date"].isoformat(),
-            "expired": booking["status"] == "hold",
+            "expired": status == "hold",
         },
         property_id=booking["property_id"],
     )
@@ -333,7 +411,9 @@ async def list_partner_bookings(
     """
     base = """
         SELECT b.id::text, b.code, b.status, b.total_amount::float8,
-               b.commission_rate::float8, b.commission_amt::float8,
+               b.commission_rate::float8,
+               CASE WHEN b.commission_status = 'void' THEN 0
+                    ELSE b.commission_amt::float8 END AS commission_amt,
                b.origin, b.source_channel,
                b.guest_name, b.guest_email, b.guest_phone,
                b.property_id::text, p.name AS property_name,

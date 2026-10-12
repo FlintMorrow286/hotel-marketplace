@@ -1,0 +1,42 @@
+# Development services only: PostgreSQL and Redis published on localhost, for the tests and for
+# `uv run uvicorn` on a machine (or sandbox) that has Docker but no local database.
+#
+#     docker compose -f docker-compose.dev.yml up -d --wait
+#
+# Credentials come from the environment (scripts/start_services.sh takes them from DATABASE_URL), so
+# they match what the application connects with. This is not the production stack: see
+# docker-compose.yml for that, where neither service is published.
+name: hotel-dev
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-hotel_user}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD (scripts/start_services.sh does)}"
+      POSTGRES_DB: "${POSTGRES_DB:-hotel_mp}"
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - dev_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  dev_postgres:

@@ -16,14 +16,14 @@ export function AppLayout() {
         К основному содержимому
       </a>
       <header className="border-b border-border-default bg-surface-page/90">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex min-h-16 max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2 sm:flex-nowrap sm:py-0 sm:px-6 lg:px-8">
           <Link
             to="/"
-            className="font-serif text-lg font-normal tracking-tight text-text-primary transition-colors duration-micro hover:text-text-secondary"
+            className="inline-flex min-h-10 items-center font-serif text-lg font-normal tracking-tight text-text-primary transition-colors duration-micro hover:text-text-secondary"
           >
             Выше&nbsp;неба
           </Link>
-          <nav className="flex items-center gap-1 text-sm sm:gap-2">
+          <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm sm:flex-nowrap sm:gap-2">
             <NavLink to="/search">Номера</NavLink>
             <NavLink to="/my-booking">Моя бронь</NavLink>
             {getToken() && !isAdmin() ? (
@@ -37,7 +37,7 @@ export function AppLayout() {
                     queryClient.clear();
                     navigate("/", { replace: true });
                   }}
-                  className="rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:text-text-primary focus-visible:shadow-focus-ring"
+                  className="min-h-10 rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:text-text-primary focus-visible:shadow-focus-ring"
                 >
                   Выйти
                 </button>
@@ -54,7 +54,7 @@ export function AppLayout() {
       <footer className="border-t border-border-default py-8 text-sm text-text-secondary">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
           <p>Отдых в Коктебеле · мгновенное подтверждение · бесплатная отмена за сутки до заезда</p>
-          <Link to="/admin" className="text-text-link hover:text-text-link-hover">
+          <Link to="/admin" className="inline-flex min-h-10 items-center text-text-link hover:text-text-link-hover">
             Админка
           </Link>
         </div>
@@ -68,7 +68,7 @@ function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
   return (
     <Link
       to={to}
-      className="rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:text-text-primary focus-visible:shadow-focus-ring"
+      className="inline-flex min-h-10 items-center rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:text-text-primary focus-visible:shadow-focus-ring"
     >
       {children}
     </Link>

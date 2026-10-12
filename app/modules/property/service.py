@@ -21,6 +21,31 @@ from app.utils.logger import get_logger
 
 log = get_logger(__name__)
 
+_PARTNER_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    "draft": {"draft", "pending_moderation", "published"},
+    "pending_moderation": {"draft", "pending_moderation", "published"},
+    "published": {"draft", "pending_moderation", "published"},
+    "blocked": {"blocked"},
+}
+
+_UNIT_FROM_PRICE = """
+(
+    SELECT min(COALESCE(pd.price::float8, priced_ut.base_price::float8))
+    FROM unit_type priced_ut
+    JOIN inventory_day i ON i.unit_type_id = priced_ut.id
+    LEFT JOIN rate_plan rp
+           ON rp.unit_type_id = priced_ut.id AND rp.active
+    LEFT JOIN price_day pd
+           ON pd.rate_plan_id = rp.id AND pd.date = i.date
+    WHERE {unit_type_filter}
+      AND i.date >= current_date
+      AND i.date < current_date + interval '30 days'
+      AND NOT i.closed
+      AND i.available - i.hold - i.sold > 0
+      AND pd.stop_sell IS DISTINCT FROM true
+)
+"""
+
 
 def _jsonb(v) -> dict:
     """asyncpg returns jsonb columns as str unless a codec is registered."""
@@ -146,15 +171,14 @@ async def get_property_for_partner(
 
 async def get_public_property(conn: asyncpg.Connection, property_id: str) -> dict | None:
     """Public catalog read: published only, no partner-internal fields."""
+    unit_from_price = _UNIT_FROM_PRICE.format(unit_type_filter="priced_ut.property_id = p.id")
     row = await conn.fetchrow(
-        """
+        f"""
         SELECT p.id::text, p.name, p.slug, p.property_type, p.city, p.timezone,
                p.checkin_time, p.checkout_time, p.currency,
                p.lat::float8, p.lng::float8, p.address::jsonb, p.photos::jsonb,
                p.amenities::jsonb,
-               (SELECT min(ut.base_price)::float8
-                  FROM unit_type ut
-                 WHERE ut.property_id = p.id) AS min_price
+               {unit_from_price} AS min_price
         FROM property p
         WHERE p.id = $1 AND p.status = 'published'
         """,
@@ -168,6 +192,11 @@ async def get_public_property(conn: asyncpg.Connection, property_id: str) -> dic
         photos=_jsonb(row["photos"]),
         amenities=_amenities(row["amenities"]),
     )
+
+
+def _like_escape(text: str) -> str:
+    """Make `%`, `_` and `\\` in a guest's search text match themselves, not act as wildcards."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 async def list_public_properties(
@@ -209,7 +238,7 @@ async def list_public_properties(
             f" WHERE ut.property_id = p.id AND ut.capacity >= ${len(args)})"
         )
     if q:
-        args.append(f"%{q}%")
+        args.append(f"%{_like_escape(q)}%")
         where += f" AND (p.name ILIKE ${len(args)} OR p.city ILIKE ${len(args)})"
     if date_from and date_to and date_to > date_from:
         # Half-open [date_from, date_to), same as the availability read: the
@@ -218,19 +247,21 @@ async def list_public_properties(
         # never ran for that room, so it is not bookable, and the catalog
         # must not offer it. This mirrors inventory.get_availability, which
         # treats a missing day as unavailable.
-        args.append(date_from)
-        args.append(date_to)
-        nights_start = len(args) - 1
+        # (unit_type, date) is the key, so "every night has such a row" is "as many
+        # such rows as nights". A night generated per day of the range cost whatever a
+        # client sent: year 1 to 9999 took two seconds, and `date_from=0001-01-01`
+        # (asyncpg sends date.min as -infinity) never finished, filling the disk with
+        # temp files. The nights are counted here: infinite dates cannot be subtracted.
+        nights = (date_to - date_from).days
+        args += [date_from, date_to, nights]
+        first, last, count = len(args) - 2, len(args) - 1, len(args)
         where += (
             f" AND EXISTS (SELECT 1 FROM unit_type ut"
             f" WHERE ut.property_id = p.id"
-            f" AND NOT EXISTS (SELECT g.d::date AS night FROM generate_series"
-            f"  (${nights_start}::date, (${nights_start + 1}::date - interval '1 day'),"
-            f"   interval '1 day') AS g(d)"
-            f"  WHERE NOT EXISTS (SELECT 1 FROM inventory_day i"
-            f"   WHERE i.unit_type_id = ut.id AND i.date = g.d::date"
-            f"     AND NOT i.closed"
-            f"     AND i.available - i.hold - i.sold > 0)))"
+            f" AND (SELECT count(*) FROM inventory_day i"
+            f"  WHERE i.unit_type_id = ut.id AND i.date >= ${first} AND i.date < ${last}"
+            f"    AND NOT i.closed AND i.available - i.hold - i.sold > 0)"
+            f"  = ${count})"
         )
     if amenities:
         # Only known keys can be in the column (the write path normalises),
@@ -254,19 +285,26 @@ async def list_public_properties(
 
     args.append(limit)
     args.append(offset)
+    unit_from_price = _UNIT_FROM_PRICE.format(unit_type_filter="priced_ut.property_id = p.id")
+    # The page is cut first (MATERIALIZED) and the price is worked out for its rows only:
+    # as a plain select-list subquery it also ran for every row OFFSET threw away, which
+    # made page 80 of a 3000-property catalog 25 times slower than page 1.
     rows = await conn.fetch(
         f"""
+        WITH page AS MATERIALIZED (
+            SELECT p.*
+            FROM property p
+            WHERE {where}
+            ORDER BY p.created_at DESC, p.id
+            LIMIT ${len(args) - 1} OFFSET ${len(args)}
+        )
         SELECT p.id::text, p.name, p.slug, p.property_type, p.city, p.timezone,
                p.checkin_time, p.checkout_time, p.currency,
                p.lat::float8, p.lng::float8, p.address::jsonb, p.photos::jsonb,
                p.amenities::jsonb,
-               (SELECT min(ut.base_price)::float8
-                  FROM unit_type ut
-                 WHERE ut.property_id = p.id) AS min_price
-        FROM property p
-        WHERE {where}
-        ORDER BY p.created_at DESC
-        LIMIT ${len(args) - 1} OFFSET ${len(args)}
+               {unit_from_price} AS min_price
+        FROM page p
+        ORDER BY p.created_at DESC, p.id
         """,
         *args,
     )
@@ -278,8 +316,7 @@ async def list_public_properties(
             photos=_jsonb(r["photos"]),
             amenities=_amenities(r["amenities"]),
         )
-        # No room types yet: the property is published but unbookable, and
-        # min_price None is exactly that — the UI says "цена не указана".
+        # No room types or bookable inventory means there is no advertised price.
         row["min_price"] = r["min_price"]
         out.append(row)
     return {"items": out, "total": total, "limit": limit, "offset": offset}
@@ -302,18 +339,35 @@ async def update_property(
     cols = list(fields)
     assignments = ", ".join(f"{c} = ${i + 3}" for i, c in enumerate(cols))
     values = [property_id, partner_id, *[fields[c] for c in cols]]
+    status_clause = ""
+    if "status" in fields:
+        allowed_from = sorted(
+            current
+            for current, destinations in _PARTNER_STATUS_TRANSITIONS.items()
+            if fields["status"] in destinations
+        )
+        values.append(allowed_from)
+        status_clause = f" AND status = ANY(${len(values)}::text[])"
 
     row = await conn.fetchrow(
         f"""
         UPDATE property
         SET {assignments}
-        WHERE id = $1 AND partner_id = $2
+        WHERE id = $1 AND partner_id = $2{status_clause}
         RETURNING id::text, partner_id::text, name, slug, property_type, city, timezone,
                   checkin_time, checkout_time, currency, status,
                   lat::float8, lng::float8, address::jsonb, amenities::jsonb, created_at
         """,
         *values,
     )
+    if row is None and "status" in fields:
+        current = await conn.fetchval(
+            "SELECT status FROM property WHERE id = $1 AND partner_id = $2",
+            property_id,
+            partner_id,
+        )
+        if current is not None:
+            raise ValueError(f"illegal partner transition: {current} -> {fields['status']}")
     return _row_to_out(row) if row else None
 
 
@@ -341,26 +395,15 @@ def _row_to_out(row: asyncpg.Record) -> PropertyOut:
 async def list_public_unit_types(conn: asyncpg.Connection, property_id: str) -> list[dict]:
     """The guest's room list for one published property, cheapest price included.
 
-    A rate plan overrides base_price when it has rows for the date; see
-    rate.get_effective_price for the same fallback in the availability path.
-    The price shown is the cheapest night across the next 30 days, so a guest
-    browsing the catalog sees what the stay actually costs instead of reaching
-    the checkout to find out.
+    A rate plan overrides base_price when it has rows for a bookable night; the
+    price shown is the cheapest such night across the next 30 days.
     """
+    unit_from_price = _UNIT_FROM_PRICE.format(unit_type_filter="priced_ut.id = ut.id")
     rows = await conn.fetch(
-        """
+        f"""
         SELECT ut.id::text, ut.property_id::text, ut.name, ut.capacity,
                ut.total_units, ut.base_price::float8,
-               COALESCE(
-                 (SELECT min(pd.price)::float8
-                  FROM price_day pd
-                  JOIN rate_plan rp ON rp.id = pd.rate_plan_id
-                  WHERE rp.unit_type_id = ut.id AND rp.active
-                    AND pd.date >= current_date
-                    AND pd.date < current_date + interval '30 days'
-                    AND pd.stop_sell = false),
-                 ut.base_price::float8
-               ) AS price,
+               {unit_from_price} AS price,
                -- The guest needs the room's cancellation terms before paying.
                -- A room with no rate plan has no terms yet, so it stays null
                -- and the UI says so rather than inventing a default.

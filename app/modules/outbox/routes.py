@@ -17,6 +17,7 @@ from app.db.pool import get_pool
 from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
 from app.modules.outbox import service
+from app.utils.netguard import require_public_url
 from app.utils.secrets import seal as seal_secret
 
 router = APIRouter(prefix="/v1", tags=["outbox"])
@@ -34,8 +35,12 @@ class WebhookCreate(BaseModel):
 def _check_url(url: str) -> str:
     from urllib.parse import urlparse
 
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    try:
+        parsed = urlparse(url)
+        valid = parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except ValueError:  # e.g. an unbalanced "[" in the host
+        valid = False
+    if not valid:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="url must be http(s)://…",
@@ -72,6 +77,7 @@ async def create_webhook(
 ) -> dict:
     """Subscribe a webhook. The partner keeps the same secret on their side."""
     _check_url(data.url)
+    await require_public_url(data.url)
     unknown = [t for t in data.event_types if t != "*" and t not in service.ALL_EVENT_TYPES]
     if unknown:
         raise HTTPException(

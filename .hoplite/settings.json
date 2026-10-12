@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "ports": {
+    "preview": 8002
+  },
+  "scripts": {
+    "setup": { "enabled": true, "command": "bash scripts/sandbox_setup.sh" },
+    "run": { "enabled": true, "command": "bash scripts/sandbox_run.sh" }
+  }
+}

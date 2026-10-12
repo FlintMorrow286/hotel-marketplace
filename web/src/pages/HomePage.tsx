@@ -126,7 +126,7 @@ export function HomePage() {
                   </p>
                   <Link
                     to={`/property/${property.id}`}
-                    className="mt-6 inline-flex w-fit items-center text-sm font-medium text-text-primary underline-offset-[3px] transition-colors duration-micro hover:underline"
+                    className="mt-6 inline-flex min-h-10 w-fit items-center text-sm font-medium text-text-primary underline-offset-[3px] transition-colors duration-micro hover:underline"
                   >
                     Подробнее
                   </Link>

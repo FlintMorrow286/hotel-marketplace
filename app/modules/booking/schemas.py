@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 BookingStatus = Literal[
     "hold", "paid", "confirmed", "cancelled", "failed", "conflict", "no_show", "refunded"
@@ -21,6 +21,19 @@ class HoldRequest(BaseModel):
     checkin: dt.date
     checkout: dt.date
     guest: GuestInfo
+
+    @model_validator(mode="after")
+    def _stay_runs_forward(self) -> HoldRequest:
+        if self.checkout <= self.checkin:
+            raise ValueError("checkout must be after checkin")
+        return self
+
+
+class BookingLookup(BaseModel):
+    """What a guest types to find a booking: the code and the booking's email."""
+
+    code: str = Field(min_length=3, max_length=32)
+    email: EmailStr
 
 
 class BookingLineOut(BaseModel):

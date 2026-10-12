@@ -137,6 +137,24 @@ WebSocket (FastAPI) для live-обновления шахматки.
 - 100 конкурентных запросов на 1 свободный номер → ровно 1 success, 99 conflict
 - Цепочка `hold → pay(stub) → confirmed` работает через curl от начала до конца
 
+Как это проверить (всё воспроизводимо командами):
+
+```bash
+bash scripts/dev_services.sh                         # Postgres + Redis, если не подняты
+uv run pytest tests -q                               # бэкенд: БД создаётся и удаляется самим набором
+uv run ruff check app tests scripts
+cd web && npm ci && npm test && npm run typecheck   # vitest + типы
+# нагрузка на горячий путь (сервер уже запущен на APP_PORT):
+uv run python scripts/load_holds.py --n 100 --units 1     # 1 x 201, 99 x 409
+uv run python scripts/load_holds.py --n 100 --units 100   # 100 x 201 на одних и тех же строках
+# e2e гостевого пути в браузере: web/playwright.config.ts, `npm run e2e` (см. job `e2e` в CI)
+```
+
+`scripts/load_holds.py` сам создаёт и убирает тестовый номер и завершается с кодом 1,
+если база расходится с ответами API или кто-то получил не 201/409.
+Холды на один тип номера выстраиваются в очередь (`app/db/tx.py`: `unit_queue`), поэтому
+шторм на одни и те же строки не даёт 503.
+
 ---
 
 ## ⚖️ Юридическое
@@ -150,8 +168,31 @@ WebSocket (FastAPI) для live-обновления шахматки.
 
 ---
 
+## Run with Docker
+
+Скопируйте .env.example в .env, задайте сгенерированные значения для JWT_SECRET, WEBHOOK_SEAL_KEY и POSTGRES_PASSWORD (пароль только из букв и цифр, например `openssl rand -hex 32`: он подставляется в DATABASE_URL как есть, и с `/`, `#`, `?`, `@` или `%` приложение не подключится к базе), а в APP_BASE_URL — публичный https-адрес (в примере стоит адрес для разработки, с ним `app` и `jobs` завершаются при старте с ConfigError); `LOG_LEVEL=debug` из примера нужен для разработки, в боевом окружении поставьте `info`. Затем запустите docker compose up --build -d. Прокси на том же хосте (адрес клиента и `FORWARDED_ALLOW_IPS`) и резервное копирование описаны в docs/DEPLOY.md.
+
+## Dev services
+
+Запустите `bash scripts/start_services.sh`: если на машине есть свои PostgreSQL и Redis, он вызовет `scripts/dev_services.sh` (без Docker; создаёт роль и базу из DATABASE_URL), иначе поднимет два контейнера из `docker-compose.dev.yml` (порты только на 127.0.0.1, логин и пароль берутся из DATABASE_URL, данные лежат в томе `hotel-dev_dev_postgres`). Скрипт можно запускать повторно. Затем запустите API командой uv run uvicorn app.main:app --reload --port 8002, а фронтенд отдельно из каталога web/ командой npm run dev.
+
+На свежем клоне или в песочнице Hoplite хватает `bash scripts/sandbox_setup.sh`: он ставит зависимости
+(`uv sync --extra bot`, `npm ci`), создаёт `.env` с сгенерированными `JWT_SECRET` и `WEBHOOK_SEAL_KEY` и
+поднимает сервисы. Повторный запуск ничего не меняет, так что он же возвращает Postgres и Redis после
+перезапуска. `.hoplite/settings.json` вызывает его как setup, а `scripts/sandbox_run.sh` (миграции, демо-данные,
+API со встроенным фронтендом на порту 8002) как превью. Без `.env` приложение не стартует: `APP_ENV` по умолчанию
+`production`, а `.env.example` ставит `local`. `scripts/seed_demo.py` создаёт аккаунты с известными
+паролями, поэтому при `APP_ENV` не `local`, `dev` или `test` он отказывается работать; флаг
+`--allow-any-database` снимает отказ.
+
 ## 📌 Статус
 
-- ✅ Блюпринт архитектуры готов (`docs/ARCHITECTURE.md`)
-- ✅ Юр.вопросы выписаны отдельно (`docs/LEGAL.md`)
-- ⏳ **Дальше:** Slice 0 (Skeleton) — репозиторий, docker-compose, миграции, JWT
+- ✅ Блюпринт архитектуры (`docs/ARCHITECTURE.md`) и юридические вопросы (`docs/LEGAL.md`)
+- ✅ Ядро Phase 1: каталог и поиск, hold → заглушка оплаты → подтверждение, отмена и возврат,
+  кабинет партнёра, админка и отчёт по комиссии, уведомления, iCal, webhooks и channel API
+- ✅ Защита ядра: токен брони для оплаты и отмены, очередь холдов по типу номера, защита от SSRF,
+  отказ от запуска с небезопасной конфигурацией (`docs/ARCHITECTURE.md` §4)
+- ✅ Проверки: pytest, vitest, Playwright (`web/e2e`), `scripts/load_holds.py`; упаковка — Dockerfile и
+  `docker-compose.yml` (`docs/DEPLOY.md`)
+- ⏳ **Дальше:** реальный эквайринг (Tinkoff/YooKassa; интерфейс `PaymentProvider` готов), сверка платежей
+  с провайдером, решения по `docs/LEGAL.md`

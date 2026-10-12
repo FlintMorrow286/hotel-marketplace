@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 
 import { bookings, availability } from "@/api/client";
 import { humanError } from "@/utils/errors";
+import { addDays } from "@/utils/date";
+import { formatDate, formatPrice } from "@/utils/format";
 import { plural } from "@/utils/plural";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -45,7 +47,7 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
   const total = days ? days.reduce((s, d) => s + (d.price ?? 0), 0) : 0;
   const blocked = days?.some((d) => d.free <= 0 || d.closed) ?? false;
   const guestComplete = Boolean(guest.name && guest.email && guest.phone);
-  const canBook = Boolean(checkin && checkout) && !blocked && guestComplete;
+  const canBook = Boolean(checkin && checkout > checkin && days?.length) && !blocked && guestComplete;
 
   function onCheck() {
     if (!checkin || !checkout) return;
@@ -61,15 +63,27 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
           label="Заезд"
           type="date"
           value={checkin}
-          onChange={(e) => setCheckin(e.target.value)}
+          onChange={(e) => {
+            const nextCheckin = e.target.value;
+            setCheckin(nextCheckin);
+            if (checkout && checkout <= nextCheckin) {
+              setCheckout(addDays(nextCheckin, 1));
+            }
+            setDays(null);
+            price.reset();
+          }}
           min={today()}
         />
         <Input
           label="Выезд"
           type="date"
           value={checkout}
-          onChange={(e) => setCheckout(e.target.value)}
-          min={checkin || today()}
+          onChange={(e) => {
+            setCheckout(e.target.value);
+            setDays(null);
+            price.reset();
+          }}
+          min={checkin ? addDays(checkin, 1) : today()}
         />
       </div>
 
@@ -106,7 +120,7 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
                   {days.length} {plural(days.length, "ночь", "ночи", "ночей")}
                 </span>
                 <strong>
-                  {total.toFixed(0)} {currency}
+                  {formatPrice(total, currency)}
                 </strong>
               </div>
               <ul className="mt-2 space-y-1">
@@ -115,8 +129,8 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
                     key={d.date}
                     className="flex justify-between text-text-secondary"
                   >
-                    <span>{d.date}</span>
-                    <span>{(d.price ?? 0).toFixed(0)} {currency}</span>
+                    <span>{formatDate(d.date)}</span>
+                    <span>{formatPrice(d.price ?? 0, currency)}</span>
                   </li>
                 ))}
               </ul>

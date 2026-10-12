@@ -14,3 +14,12 @@ export function daysBetween(from: string, to: string): number {
   const days = Math.round((b - a) / 86_400_000);
   return days > 0 ? days : 0;
 }
+
+export function addDays(date: string, days: number): string {
+  const timestamp = Date.UTC(
+    Number(date.slice(0, 4)),
+    Number(date.slice(5, 7)) - 1,
+    Number(date.slice(8, 10)),
+  );
+  return new Date(timestamp + days * 86_400_000).toISOString().slice(0, 10);
+}

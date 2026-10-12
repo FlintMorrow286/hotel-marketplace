@@ -121,7 +121,7 @@ export function ComponentsPage() {
         title="Отмена брони"
       >
         <p className="mt-2 text-text-secondary">
-          Отмена бесплатна до 24:00 дня заезда. После этого срока списывается
+          Отмена бесплатна за сутки до заезда. После этого срока списывается
           штраф.
         </p>
         <div className="mt-6 flex justify-end gap-2">

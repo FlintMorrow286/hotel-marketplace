@@ -23,6 +23,7 @@ from app.db.pool import get_pool
 from app.modules.outbox import deliver, service
 from app.utils import ratelimit
 from app.utils.logger import get_logger
+from app.utils.netguard import redact_url
 
 log = get_logger(__name__)
 
@@ -88,6 +89,7 @@ async def _deliver_one(conn: asyncpg.Connection, event: dict) -> None:
         return
 
     errors: list[str] = []
+    failures_for_log: list[dict[str, str]] = []
     throttled = 0
     for sub in subs:
         # Never push a subscription faster than its rate, even when our queue
@@ -104,6 +106,13 @@ async def _deliver_one(conn: asyncpg.Connection, event: dict) -> None:
         await service.record_delivery(conn, event["id"], sub["id"], ok, status_code, error)
         if not ok:
             errors.append(f"{sub['url']}: {error}")
+            failures_for_log.append(
+                {
+                    "subscription_id": str(sub["id"]),
+                    "url": redact_url(sub["url"]),
+                    "error": error or "delivery failed",
+                }
+            )
 
     if not errors and not throttled:
         await service.mark_published(conn, event["id"])
@@ -114,7 +123,7 @@ async def _deliver_one(conn: asyncpg.Connection, event: dict) -> None:
             "outbox-delivery-failed",
             event_id=event["id"],
             attempts=event["attempts"] + 1,
-            error="; ".join(errors),
+            failures=failures_for_log,
         )
     else:
         # Every subscriber was throttled, none failed: hand the claim back and

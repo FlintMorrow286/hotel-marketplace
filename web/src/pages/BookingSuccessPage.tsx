@@ -1,7 +1,8 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { bookings } from "@/api/client";
+import type { BookingOut } from "@/api/types";
 import { Button } from "@/components/ui/Button";
 import { CancelBooking } from "@/components/CancelBooking";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
@@ -10,6 +11,7 @@ export function BookingSuccessPage() {
   useDocumentTitle("Бронь подтверждена");
   const { bookingId } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { data: booking } = useQuery({
     queryKey: ["booking", bookingId],
     queryFn: ({ signal }) => bookings.get(bookingId as string, signal),
@@ -20,7 +22,14 @@ export function BookingSuccessPage() {
   // paying, so a cancellation here is the same path the checkout offers.
   const refund = useMutation({
     mutationFn: () => bookings.refund(bookingId as string),
-    onSuccess: () => navigate("/", { replace: true }),
+    onSuccess: (data: BookingOut) => {
+      queryClient.setQueryData(["booking", data.id], (old: BookingOut | undefined) => ({
+        ...old,
+        ...data,
+      }));
+      void queryClient.invalidateQueries({ queryKey: ["booking", data.id] });
+      navigate("/", { replace: true });
+    },
   });
 
   return (
@@ -38,7 +47,7 @@ export function BookingSuccessPage() {
         <p className="mt-3 font-mono text-sm text-text-tertiary">{booking.code}</p>
       ) : null}
       <p className="mx-auto mt-8 max-w-md text-sm leading-relaxed text-text-tertiary">
-        Бесплатная отмена до 24:00 дня заезда. После этого срока списывается
+        Бесплатная отмена за сутки до заезда. После этого срока списывается
         штраф.
       </p>
       <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:justify-center">

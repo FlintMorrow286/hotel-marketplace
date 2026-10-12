@@ -444,22 +444,27 @@ async def test_negative_base_price_rejected(committed_conn) -> None:
 @pytest.mark.asyncio
 async def test_published_property_carries_cheapest_night(db_conn) -> None:
     """The catalog card shows the cheapest night, so a guest compares objects
-    before opening one. The number comes straight from the room types — the
-    seed keeps it in base_price, no rate plan rows exist yet.
+    before opening one. The base price is used when no rate plan overrides it;
+    the cheapest room has inventory for the current night.
     """
     partner_id = await _make_partner(db_conn, "min-1@example.com")
     created = await service.create_property(db_conn, partner_id, _sample())
 
     async with db_conn.transaction():
-        await db_conn.execute(
+        budget_id = await db_conn.fetchval(
             "INSERT INTO unit_type (property_id, name, capacity, total_units, base_price) "
-            "VALUES ($1, 'Бюджет', 2, 1, 3200)",
+            "VALUES ($1, 'Бюджет', 2, 1, 3200) RETURNING id::text",
             created.id,
         )
         await db_conn.execute(
             "INSERT INTO unit_type (property_id, name, capacity, total_units, base_price) "
             "VALUES ($1, 'Люкс', 4, 2, 8900)",
             created.id,
+        )
+        await db_conn.execute(
+            "INSERT INTO inventory_day (unit_type_id, date, available) "
+            "VALUES ($1, CURRENT_DATE, 1)",
+            budget_id,
         )
 
     await service.update_property(
@@ -749,18 +754,19 @@ async def test_catalog_returns_pages_and_total(db_conn) -> None:
     the UI can page without fetching everything."""
     partner_id = await _make_partner(db_conn, "search-2@example.com")
     ids = await _publish_n(db_conn, partner_id, 5)
+    ordered_ids = sorted(ids)
 
     first = await service.list_public_properties(db_conn, limit=2, offset=0)
     assert first["total"] == 5
-    assert sorted(p["id"] for p in first["items"]) == sorted(ids[:2])
+    assert [p["id"] for p in first["items"]] == ordered_ids[:2]
 
     second = await service.list_public_properties(db_conn, limit=2, offset=2)
     assert second["total"] == 5
-    assert sorted(p["id"] for p in second["items"]) == sorted(ids[2:4])
+    assert [p["id"] for p in second["items"]] == ordered_ids[2:4]
 
     past_end = await service.list_public_properties(db_conn, limit=2, offset=4)
     assert past_end["total"] == 5
-    assert sorted(p["id"] for p in past_end["items"]) == sorted(ids[4:])
+    assert [p["id"] for p in past_end["items"]] == ordered_ids[4:]
 
 
 @pytest.mark.asyncio

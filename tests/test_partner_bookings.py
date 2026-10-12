@@ -1,7 +1,7 @@
 """The partner sees the bookings on their own inventory.
 
 A partner can set up rates, inventory and stop-sell but had no way to see who
-actually booked. The guest's /by-code/{code} lookup is deliberately blind to
+actually booked. The guest's /lookup is deliberately blind to
 contacts and origin; this is the counterpart the partner needs.
 """
 

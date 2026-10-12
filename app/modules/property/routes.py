@@ -4,7 +4,7 @@ import datetime as dt
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel
 
 from app.db.pool import get_pool
 from app.modules.auth.deps import require_scope
@@ -16,8 +16,21 @@ from app.modules.property.schemas import (
     PropertyUpdate,
 )
 from app.modules.property.unit_type_routes import UnitTypeOut
+from app.utils.ratelimit_http import throttle
 
 router = APIRouter(prefix="/v1", tags=["property"])
+
+# A value Postgres cannot take makes asyncpg raise DataError, which uuid_http answers as a
+# 404 "not found": an integer past its column's type (`guests` is compared with an int4
+# column, `offset` is a bigint) or a NUL in text. Those are refused here with a 422.
+INT4_MAX = 2**31 - 1
+INT8_MAX = 2**63 - 1
+
+
+def _no_nul(value: str | None) -> str | None:
+    if value is not None and "\x00" in value:
+        raise ValueError("must not contain a NUL character")
+    return value
 
 
 async def _partner_conn(token: Annotated[TokenData, Depends(require_scope("partner"))]):
@@ -66,7 +79,10 @@ async def update_my_property(
 ) -> PropertyOut:
     conn = await get_pool().acquire()
     try:
-        result = await service.update_property(conn, property_id, token.sub, data)
+        try:
+            result = await service.update_property(conn, property_id, token.sub, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         if result is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="property not found")
         return result
@@ -83,16 +99,20 @@ class PropertyPage(BaseModel):
     offset: int
 
 
-@router.get("/properties", response_model=PropertyPage)
+@router.get(
+    "/properties",
+    response_model=PropertyPage,
+    dependencies=[Depends(throttle("search", "search_limit_per_min"))],
+)
 async def list_public_properties(
-    city: str | None = None,
-    guests: int | None = None,
-    q: str | None = None,
+    city: Annotated[str | None, Query(), AfterValidator(_no_nul)] = None,
+    guests: Annotated[int | None, Query(ge=1, le=INT4_MAX)] = None,
+    q: Annotated[str | None, Query(max_length=100), AfterValidator(_no_nul)] = None,
     date_from: dt.date | None = Query(default=None),
     date_to: dt.date | None = Query(default=None),
     amenities: list[str] | None = Query(default=None),
     limit: Annotated[int, Query(ge=1, le=100)] = 24,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=INT8_MAX)] = 0,
 ) -> PropertyPage:
     """Public catalog — only published properties, no partner-internal fields.
 

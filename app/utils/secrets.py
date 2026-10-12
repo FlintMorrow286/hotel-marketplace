@@ -17,9 +17,13 @@ then replaced in place.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
+import os
+import weakref
+from collections.abc import Callable
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError, VerifyMismatchError
@@ -44,10 +48,45 @@ _hasher = PasswordHasher(
     hash_len=32,
     salt_len=16,
 )
+_DUMMY_PASSWORD_HASH = _hasher.hash(base64.urlsafe_b64encode(os.urandom(32)).decode("ascii"))
+
+
+# One argon2 run holds 64 MiB. Several at once are fine, a flood of them is not.
+_MAX_CONCURRENT_HASHES = max(2, min(4, os.cpu_count() or 2))
+_slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+async def run_hashing[T](fn: Callable[..., T], /, *args: object) -> T:
+    """Run a hash or a verification off the event loop, a few at a time.
+
+    argon2 takes about 70 ms and 64 MiB a call. On the loop, a burst of failed logins
+    froze every other request for as long as the burst lasted (measured: /healthz at
+    0.7-1.6 s during 24 concurrent logins); in a thread, the loop keeps serving.
+    """
+    loop = asyncio.get_running_loop()
+    slots = _slots.get(loop)
+    if slots is None:
+        slots = _slots[loop] = asyncio.Semaphore(_MAX_CONCURRENT_HASHES)
+    async with slots:
+        return await asyncio.to_thread(fn, *args)
+
+
+def dummy_secret_hash() -> str:
+    """Return the process-local Argon2 digest used for unknown accounts."""
+    return _DUMMY_PASSWORD_HASH
 
 
 def _is_legacy_digest(value: str) -> bool:
     return len(value) == _LEGACY_HEX_LEN and all(c in _HEX for c in value)
+
+
+def _verify_dummy(raw: str) -> None:
+    try:
+        _hasher.verify(_DUMMY_PASSWORD_HASH, raw)
+    except (VerificationError, ValueError):
+        pass
 
 
 def hash_secret(raw: str) -> str:
@@ -65,7 +104,10 @@ def verify_secret(raw: str, stored: str) -> bool:
     to do with a legacy hit (re-hash it, see needs_rehash).
     """
     if _is_legacy_digest(stored):
-        return hmac.compare_digest(hashlib.sha256(raw.encode()).hexdigest(), stored)
+        matched = hmac.compare_digest(hashlib.sha256(raw.encode()).hexdigest(), stored)
+        if not matched:
+            _verify_dummy(raw)
+        return matched
     try:
         return _hasher.verify(stored, raw)
     except VerifyMismatchError:
@@ -74,6 +116,7 @@ def verify_secret(raw: str, stored: str) -> bool:
         # A malformed or truncated hash column is not something to paper over:
         # treat it as a failed login, and let the caller's audit trail see it.
         log.warning("malformed-hash-verify")
+        _verify_dummy(raw)
         return False
 
 

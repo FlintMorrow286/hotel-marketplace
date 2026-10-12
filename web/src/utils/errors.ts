@@ -11,16 +11,37 @@ import { ApiException } from "@/api/client";
 
 const MESSAGES: ReadonlyArray<[RegExp, string]> = [
   // hold
+  [/check-in date is in the past/i, "Дата заезда уже прошла. Выберите другие даты."],
   [/dates not available/i, "На эти даты мест нет. Выберите другие."],
   [/idempotency conflict/i, "Это бронирование уже оформляется. Обновите страницу."],
   [/hold expired/i, "Время бронирования истекло — оформите его заново."],
   [/not holdable/i, "Эта бронь больше не активна. Оформите её заново."],
   // payment
+  [
+    /your payment was returned/i,
+    "Бронь подтвердить не удалось, деньги возвращены. Оформите её заново.",
+  ],
+  [
+    /support will refund/i,
+    "Бронь подтвердить не удалось. Деньги вернём вручную — напишите в поддержку.",
+  ],
   [/payment failed/i, "Платёж не прошёл. Деньги не списаны, попробуйте ещё раз."],
   [/changed state during payment/i, "Состояние брони изменилось во время оплаты. Попробуйте ещё раз."],
+  [
+    /stay is already over/i,
+    "Проживание уже закончилось, бронь отменить нельзя. Если нужен возврат, обратитесь к владельцу объекта.",
+  ],
   // shared
+  [
+    /booking token missing/i,
+    "Эта бронь открыта не в этой вкладке. Найдите её по коду и email на странице «Моя бронь».",
+  ],
   [/booking not found/i, "Бронирование не найдено. Обновите страницу."],
   // photos
+  [
+    /image too large: at most (\d+) megapixels/i,
+    "Фото слишком большое по размерам. Уменьшите его (до 40 мегапикселей) и попробуйте снова.",
+  ],
   [/photo too large/i, "Файл слишком большой. Лимит — 10 МБ, сожмите фото и попробуйте снова."],
   [
     /unsupported file type/i,
@@ -34,7 +55,20 @@ const MESSAGES: ReadonlyArray<[RegExp, string]> = [
     /at most \d+ photos/i,
     "Слишком много фото у одного объекта. Удалите лишнее, чтобы добавить новое.",
   ],
+  // webhook receivers and iCal feeds: our servers request them (app/utils/netguard.py)
+  [
+    /must point to a public address/i,
+    "Адрес должен быть доступен из интернета. Адреса localhost и внутренней сети (10.x, 192.168.x и т. п.) не поддерживаются.",
+  ],
 ];
+
+/** Logins, registration and booking lookups answer 429 once guessed at too often. */
+export const TOO_MANY_ATTEMPTS =
+  "Слишком много попыток. Подождите минуту и попробуйте снова.";
+
+export function isTooManyAttempts(exc: unknown): boolean {
+  return exc instanceof ApiException && exc.status === 429;
+}
 
 export function humanError(exc: unknown, fallback: string): string {
   if (!(exc instanceof ApiException)) return fallback;

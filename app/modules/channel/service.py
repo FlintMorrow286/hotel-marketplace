@@ -14,8 +14,9 @@ import secrets
 
 import asyncpg
 
+from app.db.tx import lock_unit, serializable
 from app.utils.logger import get_logger
-from app.utils.secrets import hash_secret, needs_rehash, verify_secret
+from app.utils.secrets import hash_secret, needs_rehash, run_hashing, verify_secret
 
 log = get_logger(__name__)
 
@@ -61,10 +62,6 @@ def _iso(value) -> str:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-def _hash(raw_key: str) -> str:
-    return hash_secret(raw_key)
-
-
 def generate_key() -> str:
     """A new plaintext key. Only ever returned to the partner once."""
     return f"{KEY_PREFIX}{secrets.token_urlsafe(KEY_BYTES)}"
@@ -85,7 +82,7 @@ async def create_key(conn: asyncpg.Connection, partner_id: str, label: str) -> d
         """,
         partner_id,
         label,
-        _hash(raw),
+        await run_hashing(hash_secret, raw),
         raw[:PREFIX_LEN],
     )
     assert row is not None
@@ -138,7 +135,11 @@ async def resolve_key(conn: asyncpg.Connection, raw_key: str) -> dict:
         """,
         raw_key[:PREFIX_LEN],
     )
-    row = next((r for r in rows if verify_secret(raw_key, r["key_hash"])), None)
+    row = None
+    for candidate in rows:
+        if await run_hashing(verify_secret, raw_key, candidate["key_hash"]):
+            row = candidate
+            break
     if row is None or not row["enabled"]:
         raise KeyRejected("api key not found")
     if row["status"] != "active":
@@ -148,7 +149,7 @@ async def resolve_key(conn: asyncpg.Connection, raw_key: str) -> dict:
         await conn.execute(
             "UPDATE api_key SET key_hash = $2 WHERE id = $1",
             row["id"],
-            hash_secret(raw_key),
+            await run_hashing(hash_secret, raw_key),
         )
         log.info("api-key-rehashed", key_id=row["id"])
 
@@ -359,17 +360,20 @@ async def create_channel_booking(
     idem = idempotency_namespace(partner_id, client_key)
 
     # 1. Hold with the same row locks a guest hold takes.
-    async with conn.transaction(isolation="serializable"):
-        hold = await booking_service.create_hold(
+    async with lock_unit(conn, unit_type_id):
+        hold = await serializable(
             conn,
-            unit_type_id=unit_type_id,
-            checkin=checkin,
-            checkout=checkout,
-            guest_name=guest_name,
-            guest_email=guest_email,
-            guest_phone=guest_phone,
-            idempotency_key=idem,
-            origin="channel",
+            lambda: booking_service.create_hold(
+                conn,
+                unit_type_id=unit_type_id,
+                checkin=checkin,
+                checkout=checkout,
+                guest_name=guest_name,
+                guest_email=guest_email,
+                guest_phone=guest_phone,
+                idempotency_key=idem,
+                origin="channel",
+            ),
         )
 
     # A replay of an already-confirmed booking is a success, not an error:
@@ -406,11 +410,59 @@ async def cancel_channel_booking(
     if status_now is None:
         raise NotOwned("booking not found")
 
+    if status_now == "cancelled":
+        return {"id": booking_id, "status": "cancelled"}
+    if status_now == "refunded":
+        booking = await conn.fetchrow(
+            """
+            SELECT b.id::text, b.code, b.status, b.total_amount::float8, b.paid_at,
+                   b.checkin_date, b.checkout_date,
+                   COALESCE(
+                       refund.amount::float8,
+                       b.total_amount::float8 - COALESCE(b.kept_amount, 0)::float8
+                   ) AS refunded_amount
+            FROM booking b
+            LEFT JOIN LATERAL (
+                SELECT r.amount
+                FROM payment r
+                WHERE r.booking_id = b.id AND r.status = 'refunded'
+                  AND r.created_at >= COALESCE(
+                      (SELECT max(created_at) FROM payment
+                       WHERE booking_id = b.id AND status = 'succeeded'),
+                      '-infinity'::timestamptz
+                  )
+                ORDER BY r.created_at DESC
+                LIMIT 1
+            ) refund ON true
+            WHERE b.id = $1
+            """,
+            booking_id,
+        )
+        if booking is None:
+            raise NotOwned("booking not found")
+        lines = await conn.fetch(
+            "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",
+            booking_id,
+        )
+        refunded_amount = float(booking["refunded_amount"])
+        return {
+            "id": booking["id"],
+            "code": booking["code"],
+            "status": booking["status"],
+            "total_amount": float(booking["total_amount"]),
+            "paid_at": booking["paid_at"].isoformat() if booking["paid_at"] else None,
+            "checkin_date": booking["checkin_date"].isoformat(),
+            "checkout_date": booking["checkout_date"].isoformat(),
+            "lines": [
+                {"date": line["date"].isoformat(), "price": float(line["price"])} for line in lines
+            ],
+            "free_cancelled": refunded_amount >= float(booking["total_amount"]),
+            "refunded_amount": refunded_amount,
+        }
     if status_now == "confirmed":
         return await payment_service.refund_booking(booking_id, conn=conn)
     if status_now == "hold":
-        async with conn.transaction(isolation="serializable"):
-            await booking_service.release_hold(conn, booking_id)
+        await serializable(conn, lambda: booking_service.release_hold(conn, booking_id))
         return {"id": booking_id, "status": "cancelled"}
     raise NotAvailable(f"cannot cancel booking with status={status_now}")
 

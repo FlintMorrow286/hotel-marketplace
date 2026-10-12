@@ -11,6 +11,8 @@ from app.db.pool import get_pool
 from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
 from app.modules.sync import ical_export, ical_import
+from app.utils.netguard import require_public_url
+from app.utils.ratelimit_http import throttle
 
 router = APIRouter(prefix="/v1", tags=["sync"])
 
@@ -20,8 +22,12 @@ class ImportSubscriptionRequest(BaseModel):
 
 
 def _check_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    try:
+        parsed = urlparse(url)
+        valid = parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except ValueError:  # e.g. an unbalanced "[" in the host
+        valid = False
+    if not valid:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="url must be http(s)://…",
@@ -136,6 +142,7 @@ async def set_ical_import(
 ) -> dict:
     """Create or replace the imported calendar URL. Sync runs on the next tick."""
     _check_url(data.url)
+    await require_public_url(data.url)
     conn = await get_pool().acquire()
     try:
         owned = await conn.fetchval(
@@ -188,7 +195,10 @@ async def delete_ical_import(
         await get_pool().release(conn)
 
 
-@router.post("/partner/unit-types/{unit_type_id}/ical-import/sync")
+@router.post(
+    "/partner/unit-types/{unit_type_id}/ical-import/sync",
+    dependencies=[Depends(throttle("ical-sync", "ical_sync_limit_per_min"))],
+)
 async def sync_ical_import_now(
     unit_type_id: str,
     token: Annotated[TokenData, Depends(require_scope("partner"))] = None,

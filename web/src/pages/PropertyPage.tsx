@@ -6,7 +6,7 @@ import { catalog } from "@/api/client";
 import { BookingPanel } from "@/components/BookingPanel";
 import { PhotoLightbox } from "@/components/PhotoLightbox";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
-import { formatPrice, formatPriceFrom } from "@/utils/format";
+import { formatPrice, formatPriceFrom, formatTime } from "@/utils/format";
 import { policyLabel } from "@/utils/policy";
 import { amenityLabel, propertyTypeLabel } from "@/api/types";
 
@@ -131,8 +131,8 @@ export function PropertyPage() {
               {property.name}
             </h1>
             <p className="mt-4 text-text-secondary">
-              {property.city} · заезд {property.checkin_time} · выезд{" "}
-              {property.checkout_time}
+              {property.city} · заезд {formatTime(property.checkin_time)} · выезд{" "}
+              {formatTime(property.checkout_time)}
             </p>
             {property.min_price ? (
               <p className="mt-4 font-medium">

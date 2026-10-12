@@ -7,9 +7,11 @@ synthesised with Pillow, so nothing binary lives in the repo.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import asyncpg
 import pytest
@@ -222,6 +224,88 @@ def test_oversized_is_413(client: TestClient, world: dict, monkeypatch) -> None:
         files={"file": ("big.png", _png(2000, 2000), "image/png")},
     )
     assert resp.status_code == 413, resp.text
+
+
+def test_a_small_file_that_decodes_to_too_many_pixels_is_413(
+    client: TestClient, world: dict, monkeypatch, media_tmp
+) -> None:
+    """A decompression bomb: tiny on the wire (a flat colour compresses to nothing), huge decoded."""
+    monkeypatch.setattr(settings, "photo_max_pixels", 1_000_000)
+    bomb = _png(2000, 1000)  # 2 megapixels
+    assert len(bomb) < 20_000, "the point is that the file itself is small"
+    before = sorted(p.name for p in media_tmp.rglob("*") if p.is_file())
+
+    resp = client.post(
+        f"/v1/partner/properties/{world['property_id']}/photos",
+        headers=_auth(world["token_a"]),
+        files={"file": ("bomb.png", bomb, "image/png")},
+    )
+
+    assert resp.status_code == 413, resp.text
+    assert "at most 1 megapixels" in resp.json()["detail"]
+    assert sorted(p.name for p in media_tmp.rglob("*") if p.is_file()) == before
+
+
+def test_the_pixel_limit_is_checked_before_the_image_is_decoded(monkeypatch) -> None:
+    """The size comes from the header: nothing may be converted or resized for a refused image."""
+    from PIL import Image
+
+    from app.modules.property import photos
+
+    monkeypatch.setattr(settings, "photo_max_pixels", 1_000_000)
+    bomb = _png(2000, 1000)  # built before the patches: saving it decodes
+
+    def never(*args, **kwargs):
+        raise AssertionError("the image must not be decoded")
+
+    monkeypatch.setattr(Image.Image, "convert", never)
+    monkeypatch.setattr(Image.Image, "load", never)
+
+    with pytest.raises(photos.PhotoError) as raised:
+        photos._store(bomb, Path("/nonexistent/full.webp"), Path("/nonexistent/t.webp"))
+
+    assert raised.value.status_code == 413
+
+
+def test_an_image_at_the_limit_is_accepted(client: TestClient, world: dict, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "photo_max_pixels", 2_000_000)
+
+    resp = client.post(
+        f"/v1/partner/properties/{world['property_id']}/photos",
+        headers=_auth(world["token_a"]),
+        files={"file": ("edge.png", _png(2000, 1000), "image/png")},
+    )
+
+    assert resp.status_code == 201, resp.text
+
+
+@pytest.mark.asyncio
+async def test_uploads_are_decoded_one_at_a_time(monkeypatch) -> None:
+    """A burst of large uploads queues; it must not add their memory up."""
+    import threading
+    import time
+
+    from app.modules.property import photos
+
+    running = peak = 0
+    lock = threading.Lock()
+
+    def slow_store(data, full_path, thumb_path) -> None:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+
+    async def decode() -> None:
+        async with photos._decode_slot():
+            await asyncio.to_thread(slow_store, b"", None, None)
+
+    await asyncio.gather(*(decode() for _ in range(5)))
+
+    assert peak == 1
 
 
 def test_upload_to_foreign_property_is_404(client: TestClient, world: dict) -> None:

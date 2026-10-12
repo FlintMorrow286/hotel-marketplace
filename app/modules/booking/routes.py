@@ -2,13 +2,21 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
+from app.config.settings import settings
 from app.db.pool import get_pool
+from app.db.tx import serializable, unit_queue
 from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
-from app.modules.booking import service
-from app.modules.booking.schemas import HoldRequest, PartnerBookingLineOut, PartnerBookingOut
+from app.modules.booking import access, service
+from app.modules.booking.schemas import (
+    BookingLookup,
+    HoldRequest,
+    PartnerBookingLineOut,
+    PartnerBookingOut,
+)
+from app.utils.ratelimit_http import SUBJECT_FACTOR, enforce, throttle
 
 router = APIRouter(prefix="/v1/bookings", tags=["booking"])
 
@@ -29,7 +37,7 @@ async def list_partner_bookings(
 
     The partner sees who is arriving and how the booking reached them — guest
     contacts, the booking channel, and the commission the platform takes. A
-    guest looking up the same code through /by-code/{code} sees none of this.
+    guest finding the same booking through /lookup sees none of this.
     """
     pool = get_pool()
     conn = await pool.acquire()
@@ -68,7 +76,11 @@ async def list_partner_bookings(
         await pool.release(conn)
 
 
-@router.post("/hold", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/hold",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(throttle("hold", "hold_limit_per_min"))],
+)
 async def create_hold(
     data: HoldRequest,
     idempotency_key: Annotated[str | None, Header()] = None,
@@ -78,69 +90,86 @@ async def create_hold(
     Returns 409 when the dates are not available (including the stop-sell case)
     or when the idempotency key collides with a different payload.
     """
-    pool = get_pool()
-    conn = await pool.acquire()
-    try:
-        async with conn.transaction(isolation="serializable"):
-            try:
-                row = await service.create_hold(
-                    conn,
-                    unit_type_id=data.unit_type_id,
-                    checkin=data.checkin,
-                    checkout=data.checkout,
-                    guest_name=data.guest.name,
-                    guest_email=str(data.guest.email),
-                    guest_phone=data.guest.phone,
-                    idempotency_key=idempotency_key,
-                )
-            except service.NotAvailable as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"dates not available: {exc}",
-                ) from exc
-            except service.Conflict as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"idempotency conflict: {exc}",
-                ) from exc
+    async with unit_queue(get_pool(), data.unit_type_id) as conn:
 
-            lines = await _line_dates(conn, row["id"])
-            return {
-                "id": row["id"],
-                "code": row["code"],
-                "status": row["status"],
-                "total_amount": float(row["total_amount"]),
-                "hold_expires_at": row["hold_expires_at"].isoformat(),
-                "checkin_date": data.checkin.isoformat(),
-                "checkout_date": data.checkout.isoformat(),
-                "lines": [{"date": ln["date"].isoformat(), "price": ln["price"]} for ln in lines],
-            }
-    finally:
-        await pool.release(conn)
+        async def _hold():
+            row = await service.create_hold(
+                conn,
+                unit_type_id=data.unit_type_id,
+                checkin=data.checkin,
+                checkout=data.checkout,
+                guest_name=data.guest.name,
+                guest_email=str(data.guest.email),
+                guest_phone=data.guest.phone,
+                idempotency_key=idempotency_key,
+                published_only=True,
+            )
+            return row, await _line_dates(conn, row["id"])
+
+        try:
+            row, lines = await serializable(conn, _hold)
+        except service.NotAvailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"dates not available: {exc}",
+            ) from exc
+        except service.Conflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"idempotency conflict: {exc}",
+            ) from exc
+
+        expires = row["hold_expires_at"]
+        return {
+            "id": row["id"],
+            "access_token": access.issue(row["id"]),
+            "code": row["code"],
+            "status": row["status"],
+            "total_amount": float(row["total_amount"]),
+            # A replayed key can name a booking that is already confirmed.
+            "hold_expires_at": expires.isoformat() if expires else None,
+            "checkin_date": data.checkin.isoformat(),
+            "checkout_date": data.checkout.isoformat(),
+            "lines": [{"date": ln["date"].isoformat(), "price": ln["price"]} for ln in lines],
+        }
 
 
-@router.get("/by-code/{code}")
-async def get_booking_by_code(code: str) -> dict:
-    """Guest-facing lookup: the traveller knows the BK-XXXXXX code, never the id.
+@router.post("/lookup")
+async def lookup_booking(data: BookingLookup, request: Request) -> dict:
+    """Guest-facing lookup: the BK-XXXXXX code plus the email the booking was made with.
 
-    The code is unguessable (6 chars from a 32-char alphabet) and answers only
-    public stay details — no guest contacts, no payment state.
+    The code is only ~30 bits and is printed in emails, so on its own it must
+    not unlock anything. This answers with the booking id and the access token that
+    pays for, cancels or refunds it, so the guest has to prove the second
+    factor too. A wrong email and an unknown code both answer 404. The reply
+    carries only public stay details: no guest contacts, no payment state.
+
+    Throttled per client address and per code, so guessing stays impractical.
     """
+    await enforce(request, "lookup", settings.lookup_limit_per_min)
+    await enforce(
+        request,
+        "lookup-code",
+        settings.lookup_limit_per_min * SUBJECT_FACTOR,
+        subject=data.code,
+    )
     conn = await get_pool().acquire()
     try:
         row = await conn.fetchrow(
             """
             SELECT id::text, code, status, total_amount::float8, hold_expires_at,
                    checkin_date, checkout_date, unit_type_id::text
-            FROM booking WHERE code = UPPER($1)
+            FROM booking WHERE code = UPPER($1) AND guest_email = $2
             """,
-            code,
+            data.code,
+            str(data.email),
         )
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="booking not found")
         lines = await _line_dates(conn, row["id"])
         return {
             "id": row["id"],
+            "access_token": access.issue(row["id"]),
             "code": row["code"],
             "status": row["status"],
             "total_amount": row["total_amount"],
@@ -186,15 +215,17 @@ async def get_booking(booking_id: str) -> dict:
         await get_pool().release(conn)
 
 
-@router.post("/{booking_id}/cancel")
+@router.post("/{booking_id}/cancel", dependencies=[Depends(access.require_token)])
 async def cancel_booking(booking_id: str) -> dict:
     """Cancel a hold and return inventory to the pool."""
     pool = get_pool()
     conn = await pool.acquire()
     try:
-        async with conn.transaction(isolation="serializable"):
+
+        async def _cancel():
             await service.release_hold(conn, booking_id)
-            status_now = await conn.fetchval("SELECT status FROM booking WHERE id = $1", booking_id)
-        return {"id": booking_id, "status": status_now}
+            return await conn.fetchval("SELECT status FROM booking WHERE id = $1", booking_id)
+
+        return {"id": booking_id, "status": await serializable(conn, _cancel)}
     finally:
         await pool.release(conn)

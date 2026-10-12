@@ -13,12 +13,12 @@ import asyncpg
 
 from app.config import legal
 from app.utils.logger import get_logger
-from app.utils.redis import get_redis
 
 log = get_logger(__name__)
 
-PRICE_CACHE_TTL_SEC = 60
-_PRICE_KEY = "prices:{rate_plan_id}:{from_iso}:{to_iso}"
+
+class ActivePlanExists(Exception):
+    """The unit type already has an active rate plan (one is allowed)."""
 
 
 async def create_rate_plan(
@@ -27,17 +27,22 @@ async def create_rate_plan(
     name: str,
     cancellation_policy: str = "flexible",
 ) -> dict:
-    row = await conn.fetchrow(
-        """
-        INSERT INTO rate_plan (unit_type_id, name, cancellation_policy)
-        VALUES ($1, $2, $3)
-        RETURNING id::text, unit_type_id::text, name, cancellation_policy,
-                  active, commission_rate::float8
-        """,
-        unit_type_id,
-        name,
-        cancellation_policy,
-    )
+    try:
+        # Own savepoint: a rejected insert must not abort the caller's transaction.
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO rate_plan (unit_type_id, name, cancellation_policy)
+                VALUES ($1, $2, $3)
+                RETURNING id::text, unit_type_id::text, name, cancellation_policy,
+                          active, commission_rate::float8
+                """,
+                unit_type_id,
+                name,
+                cancellation_policy,
+            )
+    except asyncpg.UniqueViolationError as exc:
+        raise ActivePlanExists(unit_type_id) from exc
     assert row is not None
     return dict(row)
 
@@ -92,8 +97,6 @@ async def set_prices(
         min_stay,
     )
     assert row is not None
-    await _invalidate(rate_plan_id)
-
     # Channels need to know a price changed so they can re-sync their tariffs.
     from app.modules.outbox import service as outbox_service
 
@@ -225,14 +228,3 @@ async def get_effective_price(conn: asyncpg.Connection, rate_plan_id: str, date:
         date,
     )
     return float(row["price"]) if row else 0.0
-
-
-async def _invalidate(rate_plan_id: str) -> None:
-    try:
-        redis = get_redis()
-        async for key in redis.scan_iter(match=f"prices:{rate_plan_id}:*"):
-            await redis.delete(key)
-    except RuntimeError:
-        pass  # Redis not initialised (unit tests)
-    except Exception as exc:
-        log.warning("price-cache-invalidate-failed", error=str(exc))

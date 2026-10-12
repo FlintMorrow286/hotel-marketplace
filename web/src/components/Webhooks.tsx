@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { Badge } from "@/components/ui/Badge";
+import { humanError } from "@/utils/errors";
 
 const EVENT_LABELS: Record<string, string> = {
   "booking.confirmed": "Бронь подтверждена",
@@ -96,7 +97,7 @@ function WebhookRow({ webhook }: { webhook: WebhookRowProps }) {
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <Webhook className="size-4 shrink-0 text-text-tertiary" aria-hidden="true" />
-          <p className="truncate font-mono text-sm">{webhook.url}</p>
+          <p className="min-w-0 break-all font-mono text-sm">{webhook.url}</p>
         </div>
         <div className="mt-2 flex flex-wrap gap-1">
           {types.map((label) => (
@@ -247,7 +248,7 @@ function CreateWebhookButton() {
                   />
                   <span>{type === "*" ? "Все события" : EVENT_LABELS[type]}</span>
                   {type !== "*" ? (
-                    <span className="font-mono text-xs text-text-tertiary">
+                    <span className="break-all font-mono text-xs text-text-tertiary">
                       {type}
                     </span>
                   ) : null}
@@ -257,7 +258,10 @@ function CreateWebhookButton() {
           </fieldset>
           {create.isError ? (
             <p role="alert" className="text-sm text-feedback-error-text">
-              Не удалось создать вебхук. Проверьте URL и попробуйте ещё раз.
+              {humanError(
+                create.error,
+                "Не удалось создать вебхук. Проверьте URL и попробуйте ещё раз.",
+              )}
             </p>
           ) : null}
           <div className="flex justify-end gap-2 pt-2">

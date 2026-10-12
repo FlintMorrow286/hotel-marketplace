@@ -22,29 +22,29 @@ export function AdminLayout() {
   return (
     <div>
       <div className="border-b border-border-default bg-surface-sunken">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-1 px-4 py-3 text-sm sm:px-6 lg:px-8">
-          <nav className="flex items-center gap-1">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-1 px-4 py-3 text-sm sm:px-6 lg:px-8">
+          <nav className="flex min-w-0 flex-wrap items-center gap-1">
             <Link
               to="/admin"
-              className="rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
+              className="inline-flex min-h-10 items-center rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
             >
               Отчёты
             </Link>
             <Link
               to="/admin/moderation"
-              className="rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
+              className="inline-flex min-h-10 items-center rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
             >
               Модерация
             </Link>
             <Link
               to="/admin/outbox"
-              className="rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
+              className="inline-flex min-h-10 items-center rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
             >
               События
             </Link>
             <Link
               to="/admin/reconciliation"
-              className="rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
+              className="inline-flex min-h-10 items-center rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
             >
               Сверка
             </Link>
@@ -57,7 +57,7 @@ export function AdminLayout() {
               queryClient.clear();
               navigate("/", { replace: true });
             }}
-            className="rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
+            className="min-h-10 rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
           >
             Выйти
           </button>

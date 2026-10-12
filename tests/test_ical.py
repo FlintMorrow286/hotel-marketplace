@@ -56,13 +56,16 @@ def _guest() -> dict:
     }
 
 
-async def _hold(conn: asyncpg.Connection, ut: str, checkin: dt.date, nights: int = 2) -> str:
+async def _hold(
+    conn: asyncpg.Connection, ut: str, checkin: dt.date, nights: int = 2, origin: str = "web"
+) -> str:
     b = await booking_service.create_hold(
         conn,
         unit_type_id=ut,
         checkin=checkin,
         checkout=checkin + dt.timedelta(days=nights),
         idempotency_key=f"k-{uuid.uuid4()}",
+        origin=origin,
         **_guest(),
     )
     return b["id"]
@@ -188,8 +191,10 @@ async def test_calendar_skips_past_stays(db_conn) -> None:
         ") AS d(date) ON CONFLICT DO NOTHING",
         seed["unit_type_id"],
     )
-    # a stay that ended yesterday
-    await _hold(db_conn, seed["unit_type_id"], TODAY - dt.timedelta(days=3), nights=2)
+    # a stay that ended yesterday (a web guest can no longer hold one: it came from a channel)
+    await _hold(
+        db_conn, seed["unit_type_id"], TODAY - dt.timedelta(days=3), nights=2, origin="channel"
+    )
 
     body = await ical_export.build_calendar(db_conn, seed["unit_type_id"])
 

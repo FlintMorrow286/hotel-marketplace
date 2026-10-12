@@ -5,6 +5,7 @@ import { partner } from "@/api/client";
 import { Button } from "@/components/ui/Button";
 import type { CalendarDay, CalendarUnit } from "@/api/types";
 import { cn } from "@/utils/cn";
+import { formatPrice } from "@/utils/format";
 
 /**
  * Partner chessboard: rows = unit types, columns = dates.
@@ -61,7 +62,7 @@ export function ChessBoard({ propertyId }: { propertyId: string }) {
   return (
     <div className="space-y-4">
       <Legend />
-      <div className="overflow-hidden rounded-xl border border-border-default bg-surface-card">
+      <div className="contain-paint overflow-hidden rounded-xl border border-border-default bg-surface-card">
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-sm">
             <caption className="sr-only">
@@ -159,7 +160,7 @@ function describe(cell: CalendarDay, total: number): string {
   if (cell.hold > 0)
     return `${cell.date}: ${cell.hold} ждут оплаты, свободно ${cell.free}`;
   if (cell.free === 0) return `${cell.date}: нет мест`;
-  return `${cell.date}: свободно ${cell.free}, цена ${cell.price.toFixed(0)} ₽`;
+  return `${cell.date}: свободно ${cell.free}, цена ${formatPrice(cell.price)}`;
 }
 
 function Legend() {

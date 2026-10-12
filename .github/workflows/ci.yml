@@ -20,7 +20,11 @@ jobs:
     services:
       postgres:
         # 16 matches the version the schema is developed against.
-        image: postgres:16
+        # Both service images come from the AWS public ECR mirror of the Docker Official
+        # Images (same digests as Docker Hub): Docker Hub's anonymous pull limit is shared
+        # by GitHub's runners and made this job fail at "Initialize containers", before any
+        # step ran.
+        image: public.ecr.aws/docker/library/postgres:16
         env:
           POSTGRES_USER: hotel_user
           POSTGRES_PASSWORD: hotel_pass
@@ -34,8 +38,8 @@ jobs:
           --health-retries 10
 
       redis:
-        # Availability caching and the rate limiters live in Redis.
-        image: redis:7
+        # The rate limiters live in Redis.
+        image: public.ecr.aws/docker/library/redis:7
         ports:
           - 6379:6379
         options: >-
@@ -49,7 +53,8 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       # The webhook seal key has to exist for subscription creation to succeed;
       # CI owns no real secrets, so a generated one is fine.
-      WEBHOOK_SEAL_KEY: ${{ secrets.WEBHOOK_SEAL_KEY || 'ci-only-seal-key-not-a-real-secret' }}
+      # Valid Fernet-format test key; CI must not use a production key.
+      WEBHOOK_SEAL_KEY: ${{ secrets.WEBHOOK_SEAL_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -62,8 +67,12 @@ jobs:
         # Telegram module directly, so `aiogram` has to be installed here.
         run: uv sync --extra bot
 
-      # Migrations are part of the gate: a pending migration here means the
-      # schema in the repo and the code have drifted apart.
+      # Start from the empty database provided by the service container.
+      - name: Apply migrations
+        run: uv run python -m app.db.migrate
+
+      # Keep the drift check: it must be clean after all committed migrations
+      # have been applied successfully.
       - name: Check for pending migrations
         run: uv run python -m app.db.migrate --check
 
@@ -95,6 +104,114 @@ jobs:
         working-directory: web
         run: npx tsc -b --noEmit
 
+      - name: Test
+        working-directory: web
+        run: npm test
+
       - name: Build
         working-directory: web
         run: npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: public.ecr.aws/docker/library/postgres:16
+        env:
+          POSTGRES_USER: hotel_user
+          POSTGRES_PASSWORD: hotel_pass
+          POSTGRES_DB: hotel_mp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: public.ecr.aws/docker/library/redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://hotel_user:hotel_pass@localhost:5432/hotel_mp
+      REDIS_URL: redis://localhost:6379/0
+      WEBHOOK_SEAL_KEY: ${{ secrets.WEBHOOK_SEAL_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }}
+      APP_ENV: local
+      APP_PORT: 8123
+      LOOKUP_LIMIT_PER_MIN: 1000
+      LOGIN_LIMIT_PER_MIN: 1000
+      REGISTER_LIMIT_PER_MIN: 1000
+      HOLD_LIMIT_PER_MIN: 1000
+      AVAILABILITY_LIMIT_PER_MIN: 1000
+      SEARCH_LIMIT_PER_MIN: 1000
+      PHOTO_UPLOAD_LIMIT_PER_MIN: 1000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python dependencies
+        run: uv sync --extra bot
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Start API
+        # The synced venv, not `uv run`: a live `uv run` holds the uv cache lock, so on a cold
+        # cache the post step of setup-uv (cache prune) waits 300 s for it and fails the job
+        # although every test passed.
+        run: |
+          nohup .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8123 > /tmp/e2e-api.log 2>&1 &
+          echo $! > /tmp/e2e-api.pid
+
+      - name: Wait for API readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8123/readyz > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/e2e-api.log
+          exit 1
+
+      - name: Run Playwright E2E
+        working-directory: web
+        env:
+          E2E_BASE_URL: http://127.0.0.1:8123
+        run: npm run e2e
+
+      - name: Upload E2E artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            web/playwright-report/
+            web/test-results/
+          if-no-files-found: ignore

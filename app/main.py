@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
+import mimetypes
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
+from app.config.checks import check_config
 from app.config.settings import settings
 from app.db.migrate import run_migrations
 from app.db.pool import close_pool, init_pool
@@ -24,7 +28,13 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+    check_config(settings)
     log.info("startup", env=settings.app_env, port=settings.app_port)
+    if not settings.is_dev and settings.payment_mode == "stub":
+        log.warning(
+            "payment-stub-outside-dev",
+            hint="bookings are confirmed without charging anyone; set PAYMENT_MODE to a real provider",
+        )
 
     pool = await init_pool()
     log.info("db-pool-ready", size=pool.get_size())
@@ -51,47 +61,49 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     if settings.sentry_dsn:
-        import sentry_sdk
+        from app.utils.sentry import init_sentry
 
-        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env)
+        init_sentry(settings.sentry_dsn, settings.app_env)
 
-    from app.jobs.reaper import reaper_loop
-    from app.modules.bot import bot_loop
-    from app.modules.outbox.retention import retention_loop
-    from app.modules.outbox.worker import outbox_loop, shard_groups
-    from app.modules.sync.poller import import_loop
     from app.utils.redis import close_redis
 
-    reaper_task = asyncio.create_task(reaper_loop())
-    import_task = asyncio.create_task(import_loop())
-    # One delivery loop per shard group: the outbox drains in parallel, and a
-    # partner's burst no longer sits in another partner's claim order.
-    outbox_tasks = [asyncio.create_task(outbox_loop(group)) for group in shard_groups()]
-    retention_task = asyncio.create_task(retention_loop())
-    # The bot is a notification channel, not a booking dependency: it runs only
-    # when a token exists, and its failure never stops the app.
-    bot_task = None
-    if settings.telegram_bot_token:
-        bot_task = asyncio.create_task(bot_loop(settings.telegram_bot_token))
+    background_tasks: list[asyncio.Task] = []
+    if settings.run_background_jobs:
+        from app.jobs.reaper import reaper_loop
+        from app.modules.bot import bot_loop
+        from app.modules.outbox.retention import retention_loop
+        from app.modules.outbox.worker import outbox_loop, shard_groups
+        from app.modules.sync.poller import import_loop
+
+        background_tasks = [
+            asyncio.create_task(reaper_loop()),
+            asyncio.create_task(import_loop()),
+            *(asyncio.create_task(outbox_loop(group)) for group in shard_groups()),
+            asyncio.create_task(retention_loop()),
+        ]
+        # The bot is a notification channel, not a booking dependency.
+        if settings.telegram_bot_token and importlib.util.find_spec("aiogram") is None:
+            log.error(
+                "telegram-bot-skipped",
+                reason="aiogram is not installed (uv sync --extra bot)",
+            )
+        elif settings.telegram_bot_token:
+            background_tasks.append(asyncio.create_task(bot_loop(settings.telegram_bot_token)))
+        else:
+            log.warning("telegram-bot-skipped", reason="TELEGRAM_BOT_TOKEN is not set")
     else:
-        log.warning("telegram-bot-skipped", reason="TELEGRAM_BOT_TOKEN is not set")
+        log.info("background-jobs-skipped", reason="RUN_BACKGROUND_JOBS is false")
 
     yield
 
-    reaper_task.cancel()
-    import_task.cancel()
-    for task in outbox_tasks:
+    for task in background_tasks:
         task.cancel()
-    retention_task.cancel()
-    if bot_task is not None:
-        bot_task.cancel()
+    # return_exceptions: a task that died on its own must not skip closing the pools below.
     with contextlib.suppress(asyncio.CancelledError):
-        await reaper_task
-        await import_task
-        await asyncio.gather(*outbox_tasks)
-        await retention_task
-        if bot_task is not None:
-            await bot_task
+        results = await asyncio.gather(*background_tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                log.error("background-task-failed", error=repr(result))
 
     await close_redis()
     await close_pool()
@@ -99,11 +111,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    docs = settings.docs_enabled
     app = FastAPI(
         title="Hotel Marketplace API",
         version="0.1.0",
         description="B2B2C accommodation marketplace — booking core",
-        docs_url="/docs",
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+        openapi_url="/openapi.json" if docs else None,
         lifespan=lifespan,
     )
 
@@ -141,6 +156,15 @@ def create_app() -> FastAPI:
 
     install_uuid_handler(app)
 
+    # A SERIALIZABLE conflict that outlasts the retries is "try again", not a fault.
+    from app.db.tx import install_conflict_handler
+
+    install_conflict_handler(app)
+
+    from app.utils.http_guard import install_http_guards
+
+    install_http_guards(app)
+
     # ---- single-app: serve the built frontend from one origin -------------
     # Static assets first (exact paths), then the SPA fallback so any deep
     # link (/search, /property/abc) lands on index.html for React Router.
@@ -162,6 +186,9 @@ def create_app() -> FastAPI:
     # from a directory outside web/ — photos come through the API, never copied
     # into the frontend's public/. Created at startup so the mount is never
     # pointing at a missing directory.
+    # Photos are stored as WebP. python:3.12-slim has no /etc/mime.types and this Python does not
+    # know .webp, so StaticFiles served every photo as application/octet-stream.
+    mimetypes.add_type("image/webp", ".webp")
     settings.media_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
         settings.media_url_prefix,
@@ -175,28 +202,38 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/readyz", tags=["health"])
-    async def readyz() -> dict:
-        """Readiness probe — checks DB + Redis are reachable."""
+    async def readyz() -> JSONResponse:
+        """Readiness probe: can this instance serve?
+
+        503 when the database does not answer, so a load balancer or a container healthcheck
+        sees it (it used to answer 200 "degraded", which no healthcheck can tell from healthy).
+        Redis only backs the rate limiter, which counts in memory without it, so a Redis outage
+        stays 200 and reads "degraded": it must not pull every instance out of rotation. The
+        cause goes to the log; an anonymous caller gets "error", not the exception text.
+        """
         from app.db.pool import get_pool
         from app.utils.redis import get_redis
 
-        checks: dict = {}
-        try:
-            pool = get_pool()
-            await pool.execute("SELECT 1")
-            checks["db"] = "ok"
-        except Exception as exc:
-            checks["db"] = f"error: {exc}"
+        async def db() -> None:
+            await get_pool().execute("SELECT 1")
 
-        try:
-            redis = get_redis()
-            await redis.ping()
-            checks["redis"] = "ok"
-        except Exception as exc:
-            checks["redis"] = f"error: {exc}"
+        async def redis() -> None:
+            await get_redis().ping()
+
+        checks: dict[str, str] = {}
+        for name, probe in (("db", db), ("redis", redis)):
+            try:
+                await probe()
+                checks[name] = "ok"
+            except Exception as exc:
+                log.warning("readyz-check-failed", check=name, error=str(exc))
+                checks[name] = "error"
 
         ok = all(v == "ok" for v in checks.values())
-        return {"status": "ok" if ok else "degraded", "checks": checks}
+        return JSONResponse(
+            {"status": "ok" if ok else "degraded", "checks": checks},
+            status_code=200 if checks["db"] == "ok" else 503,
+        )
 
     # SPA fallback — registered LAST, so it can never shadow the API.
     if static_dir.is_dir():

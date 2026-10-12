@@ -42,6 +42,8 @@ media/
 
 # Scratch Tailwind playground (not part of the app)
 web/.twtest/
+web/test-results/
+web/playwright-report/
 
 # TypeScript incremental build cache
 web/tsconfig.tsbuildinfo
