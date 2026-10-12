@@ -122,6 +122,22 @@ networks:
 and set `FORWARDED_ALLOW_IPS=172.30.0.1`. Trust only that address, and keep untrusted clients away from the published
 port, as above.
 
+## Memory and logs
+
+Measured on the Compose stack with `WEB_CONCURRENCY=2` (container memory, MiB): idle `app` 140, `jobs` 126, `db` 129,
+`redis` 3, so about 400 for the stack. A photo at the pixel limit (`PHOTO_MAX_PIXELS`, 40 MP) takes about 360 in the
+worker that decodes it and 1.6 s; each worker decodes one photo at a time, so with six uploads at once the `app`
+container peaked at 1.09 GiB. Plan for at least 2 GiB for the whole stack, and about 450 more for every worker you
+add (`WEB_CONCURRENCY`). Compose sets no memory limits.
+
+The image sets `MALLOC_MMAP_THRESHOLD_=131072`. Without it each worker kept about 440 for good after its first such
+decode: `app` went from 140 to 877 and stayed there (it did not grow over 30 more uploads, so this is not a leak, but
+a host sized from the idle figure runs out). With it `app` is back at 150 after the same uploads; the peak is the same.
+
+Every service keeps its last five log files of 20 MB (`logging` in `docker-compose.yml`). Docker's default driver
+keeps every line until the container is removed: 75 bytes per request were measured, which is 124 MiB a day at 20
+requests a second. `docker compose logs` shows only what is still on disk; ship the logs elsewhere for more history.
+
 ## Persistent data and backups
 
 PostgreSQL data is stored in the postgres_data named volume. Uploaded property photos are stored in the media_data volume mounted at /app/media. Keep both volumes when replacing containers; docker compose down -v deletes them.
@@ -179,6 +195,7 @@ image ships `scripts/rotate_seal_key.py` to change it without stopping deliverie
   feed, which lists the booking codes and the dates of the unit type. A partner changes the token with
   `POST /v1/partner/unit-types/{id}/ical-feed` and the old address stops working at once. Keep these logs out of
   shipping to third parties, or blank that path where they are shipped. Sentry does not get it (`SENTRY_DSN` above).
+  Compose keeps only the last five 20 MB files of each service's log (see "Memory and logs").
 
 ## What was exercised
 
@@ -273,6 +290,19 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   log `bot-polling-failed` at start (`Token is invalid!`, `Telegram server says - Unauthorized`) and `jobs` and `app`
   stop in under a second with exit code 0. A bot that polls successfully needs a real token and was not exercised; a
   unit test checks, with Telegram's answer stubbed, that polling leaves the SIGTERM and SIGINT handlers alone.
+- The integrity checker, run the way "Checking a running system" says, on a database with one confirmed booking:
+  `docker compose exec -T app python -m scripts.check_invariants` prints `OK: no invariant violations or warnings`
+  and exits 0, `--json` prints `{"violations": [], "warnings": []}`, `--self-test` passes. After one night's `sold`
+  count was raised by hand, with no booking behind it, it prints `VIOLATION inventory (a): <ids>` and exits 1; it
+  leaves no session idle in a transaction.
+- HSTS behind a proxy that is trusted: from the host, with `FORWARDED_ALLOW_IPS` set to the Compose gateway, a request
+  carrying `X-Forwarded-Proto: https` gets `Strict-Transport-Security: max-age=31536000` and one without it gets none.
+- Photo memory and log size, the numbers of "Memory and logs". Before the change to the image, two runs of the stack
+  with 39.7 MP uploads: container 140 MiB idle, 623 at the peak of one upload, 861 after 12 uploads, 877 after 30 more
+  (6 of them at once), each worker at 441. With `MALLOC_MMAP_THRESHOLD_` set by an override: 150 after the same
+  uploads, workers at 86. Built from the edited files: 149 after 12 uploads, 150 after 6 at once, peak 1,091, 1.57 s per
+  upload, every photo stored and served as `image/webp`. With a log limit of 10 kB and two files, 700 requests (52 kB)
+  left 8.7 kB for `docker logs`.
 
 ## Not verified
 

@@ -19,6 +19,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
     WEB_CONCURRENCY=2 \
     FORWARDED_ALLOW_IPS=127.0.0.1
 
+# Decoding a 39.7 MP photo left each worker at ~440 MiB for good (the container: 140 -> 877 MiB, measured):
+# Pillow takes 16 MiB blocks, and after the first free glibc serves blocks of that size from the heap, which
+# is not returned. A fixed threshold makes every large block an mmap; the container went back to ~150 MiB.
+ENV MALLOC_MMAP_THRESHOLD_=131072
+
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --extra bot --no-install-project \
