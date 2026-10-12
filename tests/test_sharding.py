@@ -118,20 +118,14 @@ async def test_a_property_stays_in_one_shard(committed_conn, clean_outbox) -> No
 
 
 @pytest.mark.asyncio
-async def test_properties_spread_over_the_shards(committed_conn, clean_outbox) -> None:
-    """The shard function actually fans out — one hot shard would defeat it."""
-    shards = set()
-    for i in range(20):
-        prop = await _property(committed_conn, f"sh3-{i}@example.com")
-        await outbox_service.emit(
-            committed_conn,
-            aggregate="property",
-            aggregate_id=prop,
-            event_type=outbox_service.PROPERTY_STATUS_CHANGED,
-            payload={},
-            property_id=prop,
-        )
-        shards.add(await _shard_of(committed_conn, prop))
+async def test_properties_spread_over_the_shards(committed_conn) -> None:
+    """The shard function actually fans out — one hot shard would defeat it.
+
+    The ids are fixed: the shard is a pure function of the id, and 20 random ones landed in
+    fewer than half of 16 shards about once in 1800 runs.
+    """
+    keys = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"property/{i}")) for i in range(20)]
+    shards = {await _shard_of(committed_conn, key) for key in keys}
     # 20 properties over 16 shards: a spread of at least half the shards means
     # the function is not funnelling everything into a couple of buckets.
     assert len(shards) >= settings.outbox_shard_count // 2
