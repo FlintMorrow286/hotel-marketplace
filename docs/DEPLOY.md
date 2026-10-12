@@ -42,7 +42,7 @@ Set APP_BASE_URL to the externally visible HTTPS origin. WEB_PORT controls the p
 
 The app service sets RUN_BACKGROUND_JOBS=false and may use multiple Uvicorn workers. The jobs service sets RUN_BACKGROUND_JOBS=true and WEB_CONCURRENCY=1. Keep exactly one jobs service: each process runs the hold reaper, iCal poller, outbox and retention loops, and the optional Telegram long-poll bot. Scaling jobs would duplicate these loops and can start multiple Telegram pollers.
 
-Set WEB_CONCURRENCY to fit the database connection budget; each web worker opens its own pool. To scale API containers behind a reverse proxy, remove the direct host port publication and route traffic to the app service over a private Compose network.
+Every process opens its own pool of 5 to 25 connections (`app/db/pool.py`): each web worker and the jobs process. The default stack (2 workers and jobs) can therefore hold up to 75 of PostgreSQL's default 100 `max_connections` (3 of them reserved for superusers). Raise `max_connections` before raising WEB_CONCURRENCY or adding `app` replicas: at 4 workers (5 processes) a busy instance can ask for 125 and fail with `too many clients`. Connect to PostgreSQL directly or through a pooler in session mode: migrations, the hold queue and the payment and refund lock take session-level advisory locks, which transaction pooling does not keep on one connection. To scale API containers behind a reverse proxy, remove the direct host port publication and route traffic to the app service over a private Compose network.
 
 Rate limits use the client address reported by Uvicorn. The image enables --proxy-headers but trusts X-Forwarded-For only from FORWARDED_ALLOW_IPS. Leave the safe default when connecting directly. If a reverse proxy is used, set this variable to only that proxy's fixed address or its isolated network range, and prevent untrusted clients from reaching the API directly. Do not set it to *: any peer could forge a client address and bypass per-address limits.
 
@@ -85,6 +85,7 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
 
 - `docker compose up --build -d --wait`: the image builds once (`app` builds it, `jobs` runs the same one) and
   `app`, `jobs`, `db` and `redis` report healthy.
+- `docker compose up -d --wait` without `--build` on a host that has never built the image builds it once and starts all four services healthy (28 s with a warm build cache). `app` and `jobs` start together on an empty database and both come up. With no `.env`, Compose refuses with `Set POSTGRES_PASSWORD in .env`.
 - Uploaded photos survive `docker compose down` and `up` (the `media_data` volume, written by the non-root
   user) and are served as `image/webp`.
 - With the database stopped `/readyz` answers 503 and the container turns unhealthy; when the database is back
