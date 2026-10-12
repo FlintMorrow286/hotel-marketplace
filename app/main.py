@@ -61,9 +61,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     if settings.sentry_dsn:
-        import sentry_sdk
+        from app.utils.sentry import init_sentry
 
-        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env)
+        init_sentry(settings.sentry_dsn, settings.app_env)
 
     from app.utils.redis import close_redis
 

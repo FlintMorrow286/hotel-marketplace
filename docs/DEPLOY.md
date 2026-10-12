@@ -82,7 +82,7 @@ Staff sign in at `/admin/login`. Running it again with the same email fails on t
 | HOLD_TTL_MIN | 15 | Minutes a hold keeps the inventory. `app` and `jobs` get the same value from here. |
 | ACCESS_TOKEN_TTL_MIN, JWT_ALGORITHM | 60, HS256 | Lifetime of partner and staff sessions in minutes; token algorithm. |
 | TELEGRAM_BOT_TOKEN | unset | Starts the partner notification bot in the `jobs` process. |
-| SENTRY_DSN | unset | Error reporting. |
+| SENTRY_DSN | unset | Error reporting. An error carries its exception, stack trace and request line; local variables, request bodies, the `X-Booking-Token` header and the log lines before it are not sent (`app/utils/sentry.py`). Error-level log lines are sent as events, with their text. |
 | PAYMENT_MODE, ALLOW_PRIVATE_TARGETS | stub, false | Production refuses to start with any other payment mode or with private targets on, and says so. |
 
 The containers get every key of `.env.example` and nothing else from `.env`; the lines Compose fixes itself (`APP_ENV`, `APP_HOST`, `APP_PORT`, `DATABASE_URL`, `REDIS_URL`, `MEDIA_DIR`, `RUN_BACKGROUND_JOBS`) win over the file. `tests/test_compose_env.py` fails when a key is added to `.env.example` and not to `docker-compose.yml`. A variable left unset keeps the application's default.
@@ -244,6 +244,13 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
 - A receiver that answers 307 with a `Location` on another host is not followed: `redirect refused: target must stay on
   the same host and port`. A redirect inside the same host and port is followed. The previous build followed both, and
   the other host received the `X-Signature` header and the whole body.
+- What reaches Sentry, measured on the production stack with `SENTRY_DSN` pointing at a stand-in endpoint on the
+  Docker host and the database stopped, so that a login, a booking lookup and a pay call with `X-Booking-Token` fail
+  with 500. Each produced one event (`gaierror`). With the SDK's defaults, which the application used before
+  `app/utils/sentry.py`, the events held the password, the guest's e-mail, the booking token, the JWT of the caller and
+  the partner's e-mail as plain text: in frame variables (`data`, `body`, `body_bytes`, `scope`, `request`), in the
+  request body and in the request headers. Now none of them appears and the same three events arrive. The unit tests
+  fail real routes the same way and fail if any of the four options is removed.
 
 ## Not verified
 
