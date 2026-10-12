@@ -12,9 +12,9 @@ x-backend-environment: &backend-environment
   MEDIA_DIR: /app/media
   FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
 
+# `app` builds the image; `jobs` runs the same one. Two services that both build under one tag
+# make `docker compose build` fail ("image ... already exists").
 x-backend: &backend
-  build:
-    context: .
   image: hotel-marketplace:local
   restart: unless-stopped
   depends_on:
@@ -65,6 +65,8 @@ services:
 
   app:
     <<: *backend
+    build:
+      context: .
     environment:
       <<: *backend-environment
       RUN_BACKGROUND_JOBS: "false"
@@ -76,6 +78,7 @@ services:
 
   jobs:
     <<: *backend
+    pull_policy: never  # the image comes from the `app` build above, never from a registry
     environment:
       <<: *backend-environment
       RUN_BACKGROUND_JOBS: "true"
