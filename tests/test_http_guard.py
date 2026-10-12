@@ -238,3 +238,29 @@ def test_the_limit_middleware_is_what_the_app_installs() -> None:
     names = [m.cls.__name__ for m in create_app().user_middleware]
     assert names.index("SecurityHeadersMiddleware") < names.index("BodyLimitMiddleware")
     assert BodyLimitMiddleware.__name__ in names
+
+
+def test_photos_are_served_as_webp_even_where_the_system_has_no_mime_types() -> None:
+    """python:3.12-slim ships no /etc/mime.types: the table starts empty and knows no .webp."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import mimetypes
+        mimetypes.init(files=[])  # the bare table, as in the slim image
+        mimetypes.types_map.pop(".webp", None)
+        mimetypes._db.types_map[True].pop(".webp", None)
+        assert mimetypes.guess_type("a.webp")[0] is None
+        from app.main import create_app
+        create_app()
+        print(mimetypes.guess_type("a.webp")[0])
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr[-500:]
+    assert result.stdout.strip().splitlines()[-1] == "image/webp"

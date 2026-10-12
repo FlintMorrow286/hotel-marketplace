@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib.util
+import mimetypes
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -178,6 +179,9 @@ def create_app() -> FastAPI:
     # from a directory outside web/ — photos come through the API, never copied
     # into the frontend's public/. Created at startup so the mount is never
     # pointing at a missing directory.
+    # Photos are stored as WebP. python:3.12-slim has no /etc/mime.types and this Python does not
+    # know .webp, so StaticFiles served every photo as application/octet-stream.
+    mimetypes.add_type("image/webp", ".webp")
     settings.media_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
         settings.media_url_prefix,
