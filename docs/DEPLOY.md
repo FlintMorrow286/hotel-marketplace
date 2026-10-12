@@ -227,6 +227,23 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   and `:` are read back as typed; `#` gives the same `ValueError` as `/`, `?` gives `bad query field`, `@` makes the
   host `cd@db` and the password `ab`, and `%41` becomes `A`. 48% of 10,000 samples of `openssl rand -base64 32`
   contained a `/`.
+- The URL guard in the running containers, with the production settings (`ALLOW_PRIVATE_TARGETS` off). From the `app`
+  container `https://example.com` is reached (200, through the pinned transport) and these are refused: `db`, `redis`,
+  `app` and `jobs` by name (their Compose addresses are private), `127.0.0.1`, `localhost`, `::1`, `::ffff:127.0.0.1`,
+  `0.0.0.0`, `169.254.169.254`, `2130706433` and `0x7f.0.0.1` (`0177.0.0.1` is rejected as an invalid address, a
+  `file://` URL as not http(s)). `POST /v1/partner/webhooks` answers 422 `url must point to a public address` for `db`,
+  `redis`, `169.254.169.254` and `localhost`. A subscription that is already stored with `http://redis:6379/` is tried by
+  `jobs` within about 20 s and fails with `redis points at a non-public address`, which lands in
+  `webhook_delivery.error`, `outbox_event.last_error`, `webhook_subscription.last_error` and the
+  `outbox-delivery-failed` log line (the URL there has no credentials or query).
+- A signed delivery from `jobs`, with `APP_ENV=local` and `ALLOW_PRIVATE_TARGETS=true` only so that a receiver on the
+  Docker host, a private address, is reachable. The secret is stored as a Fernet token that does not contain it. The
+  receiver got a `POST` with a valid `X-Signature` (HMAC-SHA256 of the body), `Idempotency-Key` equal to the event id,
+  `X-Event-Type` and the JSON event; it answered 500, `jobs` retried after about 15 s (the poll interval) with the same
+  key and a valid signature, got 204, and the event became `published` with a `success` row in `webhook_delivery`.
+- A receiver that answers 307 with a `Location` on another host is not followed: `redirect refused: target must stay on
+  the same host and port`. A redirect inside the same host and port is followed. The previous build followed both, and
+  the other host received the `X-Signature` header and the whole body.
 
 ## Not verified
 
