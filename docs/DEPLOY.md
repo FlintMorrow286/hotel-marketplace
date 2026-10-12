@@ -142,12 +142,36 @@ requests a second. `docker compose logs` shows only what is still on disk; ship 
 
 PostgreSQL data is stored in the postgres_data named volume. Uploaded property photos are stored in the media_data volume mounted at /app/media. Keep both volumes when replacing containers; docker compose down -v deletes them.
 
-Create a database dump and copy the photo directory to a separate backup location:
+Back up both data sets on a schedule, to a separate location, and keep a copy of `.env` with them: the dump holds the
+webhook secrets sealed with `WEBHOOK_SEAL_KEY` (lost, they cannot be read, see "Rotating WEBHOOK_SEAL_KEY") and the
+booking tokens are keyed from `JWT_SECRET`. A database dump does not include uploaded photos.
 
     docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > database-$(date +%F).sql
-    docker compose cp app:/app/media ./media-backup
+    docker compose exec -T app tar -C /app/media -cf - . > media-$(date +%F).tar
 
-Back up both data sets on a schedule and test restores before relying on them. A database dump does not include uploaded photos.
+Restore into an empty database, before `app` and `jobs` start: on their first start they create the schema, and a dump
+restored over it fails halfway (measured: 98 errors, the bookings missing, `psql` still exiting 0). On a new host, or
+after `docker compose down -v`, with the same `.env`:
+
+    docker compose up -d --wait db
+    docker compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 --single-transaction -U "$POSTGRES_USER" "$POSTGRES_DB"' < database-YYYY-MM-DD.sql
+    docker compose up -d --wait
+    docker compose exec -T -u root app tar -C /app/media -xf - < media-YYYY-MM-DD.tar
+    docker compose exec -T app python -m scripts.check_invariants
+
+Where the database already exists, run `docker compose stop app jobs` first, then
+`docker compose exec -T db sh -c 'dropdb -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'`,
+and continue from the `psql` line.
+
+Restore the photos with `tar` as root, as above, not with `docker compose cp`. `cp` gives the files the uid of whoever
+ran it, and the application's user then cannot write to those property directories: uploading a photo to such a
+property answers 415 "the file is corrupt" (the `photo-decode-failed` log line says `Permission denied`), and deleting
+one succeeds while its files stay on disk, still served at their URL. A second scheduled `cp` of the same directory
+also puts its copy inside the first one (`media-backup/media/...`) and leaves the first as it was.
+
+A restored copy that is not the production system must not run `jobs` with production's `.env`: it would deliver the
+webhooks still pending in the outbox, poll the partners' iCal feeds and compete with production for the Telegram bot.
+Start it with `docker compose up -d --wait db app`, which leaves `jobs` out.
 
 ## Rotating WEBHOOK_SEAL_KEY
 
@@ -211,8 +235,19 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
 - With Redis stopped under a running server (a local process, not the container stack): `/readyz` answers 200
   `degraded`, search keeps working, and the login limiter keeps its ceiling in memory (ten wrong logins pass, the
   next ones get 429); when Redis is back `/readyz` is `ok` again without a restart.
-- The backup commands above: the `pg_dump` output restores into an empty database with the same tables and row
-  counts, and `docker compose cp` copies the photo directory.
+- The backup and restore of "Persistent data and backups", on a second Compose project (new volumes, the same `.env`)
+  on the same Docker host, from a stack with two partners, a confirmed booking and a photo. The dump restored into the
+  empty database with `ON_ERROR_STOP` without an error and with the source's row counts, the stack then applied no
+  migration (`"versions": []`), the partner could log in, `check_invariants` exited 0, and after the `tar` restore the
+  photo came back byte for byte, owned by the application's uid; a new photo uploaded (201) and the restored one was
+  deleted with both its files (404 afterwards). The same dump restored over the started stack was refused (exit 3,
+  nothing changed); without `ON_ERROR_STOP` it printed 98 errors, loaded the partners and properties but not the
+  bookings, and exited 0. Recovery on the same host (stop, `dropdb`, `createdb`, restore, start) took three partners
+  back to the two of the dump. With `docker compose cp` instead of `tar` the files belonged to the host user, an upload
+  answered 415 (`[Errno 13] Permission denied` in the log), and a delete answered 200 and left both files on disk,
+  still served with 200; `docker compose cp ./dir app:/app/media` put the copy under `/app/media/dir`, where the photo
+  answered 404. `docker compose up -d --wait db app` starts `app`, `db` and `redis` only: `app` logs
+  `background-jobs-skipped`, and no bot starts even with `TELEGRAM_BOT_TOKEN` set.
 - `docker compose exec -T app python -m scripts.check_invariants` reports no violations; `API_DOCS=true` serves
   `/docs` and `/openapi.json`; without it those paths answer with the web app's own page.
 - The staff account command above, as written: it stores one argon2 hash; `POST /v1/admin/login` answers 200
@@ -310,7 +345,9 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   HSTS over real HTTPS. Only requests made from the host were exercised (above).
 - Several `app` replicas, or `WEB_CONCURRENCY` above 2, under load. `scripts/load_holds.py` refuses a production
   environment, so the hold queue was measured outside the production container.
-- Restoring a backup on another host.
+- Restoring a backup on another physical host; it was restored on a second Compose project of the same Docker host.
+- A failed photo write (wrong owner, full disk) is answered as 415 "the file is corrupt", as `add_photo` did before
+  this stack; the real error is in the `photo-decode-failed` log line.
 - Real payments: `PAYMENT_MODE=stub` is the only implemented provider.
 
 ## What startup refuses
