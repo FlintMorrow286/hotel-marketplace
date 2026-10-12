@@ -286,17 +286,25 @@ async def list_public_properties(
     args.append(limit)
     args.append(offset)
     unit_from_price = _UNIT_FROM_PRICE.format(unit_type_filter="priced_ut.property_id = p.id")
+    # The page is cut first (MATERIALIZED) and the price is worked out for its rows only:
+    # as a plain select-list subquery it also ran for every row OFFSET threw away, which
+    # made page 80 of a 3000-property catalog 25 times slower than page 1.
     rows = await conn.fetch(
         f"""
+        WITH page AS MATERIALIZED (
+            SELECT p.*
+            FROM property p
+            WHERE {where}
+            ORDER BY p.created_at DESC, p.id
+            LIMIT ${len(args) - 1} OFFSET ${len(args)}
+        )
         SELECT p.id::text, p.name, p.slug, p.property_type, p.city, p.timezone,
                p.checkin_time, p.checkout_time, p.currency,
                p.lat::float8, p.lng::float8, p.address::jsonb, p.photos::jsonb,
                p.amenities::jsonb,
                {unit_from_price} AS min_price
-        FROM property p
-        WHERE {where}
+        FROM page p
         ORDER BY p.created_at DESC, p.id
-        LIMIT ${len(args) - 1} OFFSET ${len(args)}
         """,
         *args,
     )
