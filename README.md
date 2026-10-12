@@ -172,9 +172,9 @@ uv run python scripts/load_holds.py --n 100 --units 100   # 100 x 201 на од�
 
 Скопируйте .env.example в .env, задайте сгенерированные значения для JWT_SECRET, WEBHOOK_SEAL_KEY и POSTGRES_PASSWORD, затем запустите docker compose up --build -d. Настройки прокси и резервного копирования описаны в docs/DEPLOY.md.
 
-## Dev services without Docker
+## Dev services
 
-Запустите bash scripts/dev_services.sh: скрипт поднимет локальные PostgreSQL и Redis и создаст роль/базу из DATABASE_URL. Затем запустите API командой uv run uvicorn app.main:app --reload --port 8002, а фронтенд отдельно из каталога web/ командой npm run dev.
+Запустите `bash scripts/start_services.sh`: если на машине есть свои PostgreSQL и Redis, он вызовет `scripts/dev_services.sh` (без Docker; создаёт роль и базу из DATABASE_URL), иначе поднимет два контейнера из `docker-compose.dev.yml` (порты только на 127.0.0.1, логин и пароль берутся из DATABASE_URL, данные лежат в томе `hotel-dev_dev_postgres`). Скрипт можно запускать повторно. Затем запустите API командой uv run uvicorn app.main:app --reload --port 8002, а фронтенд отдельно из каталога web/ командой npm run dev.
 
 На свежем клоне или в песочнице Hoplite хватает `bash scripts/sandbox_setup.sh`: он ставит зависимости
 (`uv sync --extra bot`, `npm ci`), создаёт `.env` с сгенерированными `JWT_SECRET` и `WEBHOOK_SEAL_KEY` и
