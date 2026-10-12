@@ -20,6 +20,47 @@ Then run:
 
 Set APP_BASE_URL to the externally visible HTTPS origin. WEB_PORT controls the published host port; the container listens on port 8000. Compose refuses to start if JWT_SECRET, WEBHOOK_SEAL_KEY, or POSTGRES_PASSWORD is empty.
 
+## First staff account
+
+Nothing creates the first staff (admin) account: `scripts/seed_demo.py` does, but with a password that is in
+the repository, and it is not in the image. Staff moderate properties, read the commission report and are the
+only ones who can change a rate plan's commission (`PATCH /v1/admin/rate-plans/{id}`), so create one account
+after the first start. The password is read from the environment, not the command line, and stored as an
+argon2 hash:
+
+```sh
+printf 'Staff password: '; read -rs ADMIN_PASSWORD; echo; export ADMIN_PASSWORD
+docker compose exec -T -e ADMIN_PASSWORD app python - staff@example.com <<'PY'
+import asyncio
+import os
+import sys
+
+import asyncpg
+
+from app.config.settings import settings
+from app.utils.secrets import hash_secret
+
+
+async def main(email: str, password: str) -> None:
+    conn = await asyncpg.connect(settings.database_url)
+    await conn.execute(
+        "INSERT INTO admin (email, password_hash) VALUES ($1, $2)",
+        email,
+        hash_secret(password),
+    )
+    await conn.close()
+
+
+password = os.environ["ADMIN_PASSWORD"]
+if len(password) < 12:
+    sys.exit("the password must be at least 12 characters")
+asyncio.run(main(sys.argv[1], password))
+PY
+unset ADMIN_PASSWORD
+```
+
+Staff sign in at `/admin/login`. Running it again with the same email fails on the unique key.
+
 ## Environment
 
 | Variable | Required/default | Purpose |
@@ -97,6 +138,11 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   counts, and `docker compose cp` copies the photo directory.
 - `docker compose exec -T app python -m scripts.check_invariants` reports no violations; `API_DOCS=true` serves
   `/docs` and `/openapi.json`; without it those paths answer with the web app's own page.
+- The staff account command above, as written: it stores one argon2 hash; `POST /v1/admin/login` answers 200
+  with an admin token for the right password and 401 for a wrong one or an unknown email; the token is accepted
+  by `GET /v1/admin/reports/commission` (200) and `PATCH /v1/admin/rate-plans/{id}` (404 for an unknown plan,
+  401 without a token); a second run with the same email fails on the unique key, and a password under 12
+  characters is refused before anything is written.
 
 ## Not verified
 
