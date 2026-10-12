@@ -176,6 +176,13 @@ uv run python scripts/load_holds.py --n 100 --units 100   # 100 x 201 на од�
 
 Запустите bash scripts/dev_services.sh: скрипт поднимет локальные PostgreSQL и Redis и создаст роль/базу из DATABASE_URL. Затем запустите API командой uv run uvicorn app.main:app --reload --port 8002, а фронтенд отдельно из каталога web/ командой npm run dev.
 
+На свежем клоне или в песочнице Hoplite хватает `bash scripts/sandbox_setup.sh`: он ставит зависимости
+(`uv sync --extra bot`, `npm ci`), создаёт `.env` с сгенерированными `JWT_SECRET` и `WEBHOOK_SEAL_KEY` и
+поднимает сервисы. Повторный запуск ничего не меняет, так что он же возвращает Postgres и Redis после
+перезапуска. `.hoplite/settings.json` вызывает его как setup, а `scripts/sandbox_run.sh` (миграции, демо-данные,
+API со встроенным фронтендом на порту 8002) как превью. Без `.env` приложение не стартует: `APP_ENV` по умолчанию
+`production`, а `.env.example` ставит `local`.
+
 ## 📌 Статус
 
 - ✅ Блюпринт архитектуры готов (`docs/ARCHITECTURE.md`)
