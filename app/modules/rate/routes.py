@@ -74,33 +74,32 @@ async def list_rate_plans(
 ) -> list[dict]:
     conn = await get_pool().acquire()
     try:
+        owned = await conn.fetchval(
+            "SELECT 1 FROM unit_type ut JOIN property p ON p.id = ut.property_id "
+            "WHERE ut.id = $1 AND p.partner_id = $2",
+            unit_type_id,
+            token.sub,
+        )
+        if not owned:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unit type not found")
         return await service.list_rate_plans(conn, unit_type_id)
     finally:
         await get_pool().release(conn)
 
 
-@router.patch("/partner/rate-plans/{rate_plan_id}")
+@router.patch("/admin/rate-plans/{rate_plan_id}")
 async def patch_rate_plan(
     rate_plan_id: str,
     data: RatePlanPatch,
-    token: Annotated[TokenData, Depends(require_scope("partner"))],
+    token: Annotated[TokenData, Depends(require_scope("admin"))],
 ) -> dict:
-    """Set the commission share of a rate plan.
+    """Set the commission share of a rate plan. Staff only: the share is the platform's revenue.
 
     A booking snapshots the rate at hold time, so this only affects stays
     booked after the change.
     """
     conn = await get_pool().acquire()
     try:
-        owned = await conn.fetchval(
-            "SELECT 1 FROM rate_plan rp JOIN unit_type ut ON ut.id = rp.unit_type_id "
-            "JOIN property p ON p.id = ut.property_id "
-            "WHERE rp.id = $1 AND p.partner_id = $2",
-            rate_plan_id,
-            token.sub,
-        )
-        if not owned:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="rate plan not found")
         try:
             return await service.update_rate_plan(conn, rate_plan_id, data.commission_rate)
         except KeyError as exc:

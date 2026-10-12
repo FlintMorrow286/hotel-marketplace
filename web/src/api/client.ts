@@ -404,11 +404,6 @@ export const partner = {
       name: string;
       cancellation_policy: string;
     }) => request<RatePlan>("/partner/rate-plans", { method: "POST", body }),
-    patch: (ratePlanId: string, body: { commission_rate: number | null }) =>
-      request<RatePlan>(`/partner/rate-plans/${encodeURIComponent(ratePlanId)}`, {
-        method: "PATCH",
-        body,
-      }),
   },
   prices: {
     set: (body: {
