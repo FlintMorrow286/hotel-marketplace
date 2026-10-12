@@ -16,6 +16,7 @@ from app.modules.property.schemas import (
     PropertyUpdate,
 )
 from app.modules.property.unit_type_routes import UnitTypeOut
+from app.utils.ratelimit_http import throttle
 
 router = APIRouter(prefix="/v1", tags=["property"])
 
@@ -98,7 +99,11 @@ class PropertyPage(BaseModel):
     offset: int
 
 
-@router.get("/properties", response_model=PropertyPage)
+@router.get(
+    "/properties",
+    response_model=PropertyPage,
+    dependencies=[Depends(throttle("search", "search_limit_per_min"))],
+)
 async def list_public_properties(
     city: Annotated[str | None, Query(), AfterValidator(_no_nul)] = None,
     guests: Annotated[int | None, Query(ge=1, le=INT4_MAX)] = None,

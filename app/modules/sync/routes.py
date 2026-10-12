@@ -12,6 +12,7 @@ from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
 from app.modules.sync import ical_export, ical_import
 from app.utils.netguard import require_public_url
+from app.utils.ratelimit_http import throttle
 
 router = APIRouter(prefix="/v1", tags=["sync"])
 
@@ -194,7 +195,10 @@ async def delete_ical_import(
         await get_pool().release(conn)
 
 
-@router.post("/partner/unit-types/{unit_type_id}/ical-import/sync")
+@router.post(
+    "/partner/unit-types/{unit_type_id}/ical-import/sync",
+    dependencies=[Depends(throttle("ical-sync", "ical_sync_limit_per_min"))],
+)
 async def sync_ical_import_now(
     unit_type_id: str,
     token: Annotated[TokenData, Depends(require_scope("partner"))] = None,

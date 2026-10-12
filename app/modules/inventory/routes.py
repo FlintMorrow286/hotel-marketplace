@@ -10,6 +10,7 @@ from app.db.pool import get_pool
 from app.modules.auth.deps import require_scope
 from app.modules.auth.jwt import TokenData
 from app.modules.inventory import service
+from app.utils.ratelimit_http import throttle
 
 router = APIRouter(prefix="/v1", tags=["inventory"])
 
@@ -80,7 +81,10 @@ async def close_dates(
         await get_pool().release(conn)
 
 
-@router.get("/availability")
+@router.get(
+    "/availability",
+    dependencies=[Depends(throttle("availability", "availability_limit_per_min"))],
+)
 async def availability(
     unit_type_id: str = Query(...),
     date_from: dt.date = Query(...),

@@ -61,7 +61,16 @@ def _relaxed_public_rate_limits():
 
     Only tests/test_public_ratelimit.py tightens these, with an address of its own.
     """
-    names = ("login_limit_per_min", "register_limit_per_min", "lookup_limit_per_min")
+    names = (
+        "login_limit_per_min",
+        "register_limit_per_min",
+        "lookup_limit_per_min",
+        "hold_limit_per_min",
+        "availability_limit_per_min",
+        "search_limit_per_min",
+        "photo_upload_limit_per_min",
+        "ical_sync_limit_per_min",
+    )
     saved = {name: getattr(settings, name) for name in names}
     for name in names:
         setattr(settings, name, 100_000)

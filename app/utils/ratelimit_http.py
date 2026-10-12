@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
+from collections.abc import Awaitable, Callable
 
 from fastapi import HTTPException, Request, status
 
@@ -65,3 +66,17 @@ async def enforce(request: Request, bucket: str, limit: int, *, subject: str | N
             detail="too many attempts, try again later",
             headers={"Retry-After": str(retry_after)},
         )
+
+
+def throttle(bucket: str, setting: str) -> Callable[[Request], Awaitable[None]]:
+    """A route dependency: at most `settings.<setting>` calls per client address per window.
+
+        @router.post("/hold", dependencies=[Depends(throttle("hold", "hold_limit_per_min"))])
+
+    The setting is read per request, so an operator (or a test) can change it.
+    """
+
+    async def check(request: Request) -> None:
+        await enforce(request, bucket, getattr(settings, setting))
+
+    return check

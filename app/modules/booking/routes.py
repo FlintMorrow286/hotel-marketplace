@@ -16,7 +16,7 @@ from app.modules.booking.schemas import (
     PartnerBookingLineOut,
     PartnerBookingOut,
 )
-from app.utils.ratelimit_http import SUBJECT_FACTOR, enforce
+from app.utils.ratelimit_http import SUBJECT_FACTOR, enforce, throttle
 
 router = APIRouter(prefix="/v1/bookings", tags=["booking"])
 
@@ -76,7 +76,11 @@ async def list_partner_bookings(
         await pool.release(conn)
 
 
-@router.post("/hold", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/hold",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(throttle("hold", "hold_limit_per_min"))],
+)
 async def create_hold(
     data: HoldRequest,
     idempotency_key: Annotated[str | None, Header()] = None,

@@ -20,6 +20,7 @@ from app.modules.auth.jwt import TokenData
 from app.modules.property import photos
 from app.modules.property.photos import PhotoError
 from app.modules.property.schemas import PhotoOut
+from app.utils.ratelimit_http import throttle
 
 router = APIRouter(prefix="/v1", tags=["property-photos"])
 
@@ -71,6 +72,7 @@ async def list_property_photos(
     "/partner/properties/{property_id}/photos",
     response_model=list[PhotoOut],
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(throttle("photo-upload", "photo_upload_limit_per_min"))],
 )
 async def upload_property_photo(
     property_id: str,

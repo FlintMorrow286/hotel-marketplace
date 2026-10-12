@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     register_limit_per_min: int = Field(default=5)
     lookup_limit_per_min: int = Field(default=10)
 
+    # ----- Public and partner endpoints that are expensive, not guessable -----
+    # Per client address per window. A hold takes inventory for 15 minutes, so unthrottled
+    # one script could lock every room; the others cost a wide query, a decode or an HTTP fetch.
+    hold_limit_per_min: int = Field(default=20)
+    availability_limit_per_min: int = Field(default=120)
+    search_limit_per_min: int = Field(default=240)
+    photo_upload_limit_per_min: int = Field(default=20)
+    ical_sync_limit_per_min: int = Field(default=6)
+
     # ----- Outbox backlog limit -----
     # A mass operation (bulk price load, an iCal import of a whole season) can
     # throw thousands of events at the queue; the worker drains it at

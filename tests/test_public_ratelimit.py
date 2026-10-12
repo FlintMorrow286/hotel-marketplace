@@ -245,6 +245,7 @@ async def test_the_limiter_keeps_the_email_and_the_code_out_of_redis_and_the_log
     redis, log = _DownRedis(), _Recorder()
     monkeypatch.setattr(ratelimit, "get_redis", lambda: redis)
     monkeypatch.setattr(ratelimit, "log", log)
+    monkeypatch.setattr(ratelimit, "_last_fallback_log", 0.0)  # the notice is once per stretch
     request = SimpleNamespace(client=SimpleNamespace(host="203.0.113.9"))
     email, code = "guest.private@example.com", "BK-PRIVAT"
 
@@ -252,7 +253,7 @@ async def test_the_limiter_keeps_the_email_and_the_code_out_of_redis_and_the_log
     await enforce(request, "login-account", 5, subject=email.upper())
     await enforce(request, "lookup-code", 5, subject=code)
 
-    assert [event for event, _ in log.records].count("ratelimit-failed-open") == 3
+    assert [event for event, _ in log.records].count("ratelimit-local-fallback") == 1
     seen = " ".join(redis.keys) + repr(log.records)
     assert "private" not in seen.lower() and "privat" not in seen.lower()
     assert redis.keys[0] == redis.keys[1] != redis.keys[2]  # same account, same bucket
