@@ -26,6 +26,10 @@ const MESSAGES: ReadonlyArray<[RegExp, string]> = [
   ],
   [/payment failed/i, "Платёж не прошёл. Деньги не списаны, попробуйте ещё раз."],
   [/changed state during payment/i, "Состояние брони изменилось во время оплаты. Попробуйте ещё раз."],
+  [
+    /stay is already over/i,
+    "Проживание уже закончилось, бронь отменить нельзя. Если нужен возврат, обратитесь к владельцу объекта.",
+  ],
   // shared
   [
     /booking token missing/i,

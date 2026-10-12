@@ -303,8 +303,13 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
             amount = earlier["amount"]
             is_free = amount >= booking["total_amount"]
         else:
+            today = _today_at(booking["timezone"])
+            # A stay that is over is not the platform's to refund: the guest has had it. (A
+            # refund the provider already made is finished above, whatever the date.)
+            if booking["checkout_date"] <= today:
+                raise PaymentError("the stay is already over; ask the property for a refund")
             # checkin_date is a date; the free window ends at that date boundary.
-            is_free = _today_at(booking["timezone"]) <= deadline
+            is_free = today <= deadline
             # A late cancellation keeps the penalty share; the rest goes back to
             # the guest. The rate is a legal constant, not a technical default.
             if is_free:

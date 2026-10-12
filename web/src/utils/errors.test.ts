@@ -41,6 +41,11 @@ const knownErrors = [
     message: "Бронь подтвердить не удалось. Деньги вернём вручную — напишите в поддержку.",
   },
   {
+    detail: "the stay is already over; ask the property for a refund",
+    message:
+      "Проживание уже закончилось, бронь отменить нельзя. Если нужен возврат, обратитесь к владельцу объекта.",
+  },
+  {
     detail: "booking token missing",
     message:
       "Эта бронь открыта не в этой вкладке. Найдите её по коду и email на странице «Моя бронь».",

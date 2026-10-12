@@ -370,6 +370,83 @@ async def test_the_free_window_is_read_at_the_property_not_at_the_server(
     assert outcomes == {"Pacific/Pago_Pago": True, "Pacific/Kiritimati": False}
 
 
+# ---------------------------------------------------------------- a stay that is over is not refunded
+
+
+async def _confirmed_stay(conn: asyncpg.Connection, email: str, first_night, nights: int) -> str:
+    """A confirmed booking moved to the given dates (the stay itself is what matters here)."""
+    ut = await _seed_unit(conn, email)
+    booking_id = await _hold(conn, ut)
+    await service.pay_and_confirm(booking_id, conn=conn)
+    await conn.execute(
+        "UPDATE booking SET checkin_date = $2, checkout_date = $3 WHERE id = $1",
+        booking_id,
+        first_night,
+        first_night + dt.timedelta(days=nights),
+    )
+    return booking_id
+
+
+@pytest.mark.asyncio
+async def test_a_stay_that_is_over_cannot_be_refunded(committed_conn, monkeypatch) -> None:
+    today = service._today_at("Europe/Simferopol")
+    booking_id = await _confirmed_stay(
+        committed_conn, "over1@example.com", today - dt.timedelta(days=5), 2
+    )
+    provider = RecordingProvider()
+    _use(monkeypatch, provider)
+
+    with pytest.raises(service.PaymentError, match="stay is already over"):
+        await service.refund_booking(booking_id, conn=committed_conn)
+
+    assert provider.calls == [], "the provider must not be asked to pay anything back"
+    status = await committed_conn.fetchval("SELECT status FROM booking WHERE id = $1", booking_id)
+    assert status == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_the_checkout_day_is_the_end_of_the_stay(committed_conn, monkeypatch) -> None:
+    today = service._today_at("Europe/Simferopol")
+    last_night_was_yesterday = await _confirmed_stay(
+        committed_conn, "over2@example.com", today - dt.timedelta(days=2), 2
+    )
+    last_night_is_tonight = await _confirmed_stay(
+        committed_conn, "over3@example.com", today - dt.timedelta(days=1), 2
+    )
+    provider = RecordingProvider()
+    _use(monkeypatch, provider)
+
+    with pytest.raises(service.PaymentError, match="stay is already over"):
+        await service.refund_booking(last_night_was_yesterday, conn=committed_conn)
+    out = await service.refund_booking(last_night_is_tonight, conn=committed_conn)
+
+    assert out["status"] == "refunded" and out["free_cancelled"] is False
+    assert provider.verbs == ["refund"]
+
+
+@pytest.mark.asyncio
+async def test_a_refund_the_provider_already_made_is_finished_even_after_the_stay(
+    committed_conn, monkeypatch
+) -> None:
+    """The call died after the provider paid back; by the retry the stay has ended."""
+    today = service._today_at("Europe/Simferopol")
+    booking_id = await _confirmed_stay(
+        committed_conn, "over4@example.com", today - dt.timedelta(days=5), 2
+    )
+    await committed_conn.execute(
+        "INSERT INTO payment (booking_id, provider, amount, status) VALUES ($1, 'stub', 3000, 'refunded')",
+        booking_id,
+    )
+    provider = RecordingProvider()
+    _use(monkeypatch, provider)
+
+    out = await service.refund_booking(booking_id, conn=committed_conn)
+
+    assert out["status"] == "refunded"
+    assert out["refunded_amount"] == 3000
+    assert provider.calls == []
+
+
 # ---------------------------------------------------------------- commission follows the money
 
 
