@@ -159,6 +159,10 @@ class Settings(BaseSettings):
     photo_max_bytes: int = Field(default=10 * 1024 * 1024)
     photo_max_per_property: int = Field(default=12)
     # Long edge of the stored full size; the card/thumb pair is generated next.
+    # A decoded RGB image costs 3 bytes a pixel, twice over while it is converted and resized: a
+    # 165 KB PNG of 170 megapixels took 8 s and ~0.9 GiB of a worker. Above this it is refused
+    # before it is decoded. 40 MP covers every phone camera (8000 x 5000).
+    photo_max_pixels: int = Field(default=40_000_000)
     photo_max_dimension: int = Field(default=1920)
     photo_thumb_width: int = Field(default=800)
 

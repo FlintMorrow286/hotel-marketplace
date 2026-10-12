@@ -38,6 +38,10 @@ const MESSAGES: ReadonlyArray<[RegExp, string]> = [
   ],
   [/booking not found/i, "Бронирование не найдено. Обновите страницу."],
   // photos
+  [
+    /image too large: at most (\d+) megapixels/i,
+    "Фото слишком большое по размерам. Уменьшите его (до 40 мегапикселей) и попробуйте снова.",
+  ],
   [/photo too large/i, "Файл слишком большой. Лимит — 10 МБ, сожмите фото и попробуйте снова."],
   [
     /unsupported file type/i,

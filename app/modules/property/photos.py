@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +46,21 @@ _MAGIC: tuple[bytes, str] = (
 )
 
 ACCEPTED_TYPES = tuple(sorted({t for _, t in _MAGIC}))
+
+
+# A decode takes a few hundred MiB at the pixel limit: one at a time per worker, so a burst of
+# uploads queues instead of adding up. (A semaphore belongs to one event loop, hence the map.)
+_slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _decode_slot() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slot = _slots.get(loop)
+    if slot is None:
+        slot = _slots[loop] = asyncio.Semaphore(1)
+    return slot
 
 
 class PhotoError(Exception):
@@ -136,7 +152,8 @@ async def add_photo(
     full_path, thumb_path, full_url, thumb_url = _urls(property_id, photo_id)
 
     try:
-        await asyncio.to_thread(_store, data, full_path, thumb_path)
+        async with _decode_slot():
+            await asyncio.to_thread(_store, data, full_path, thumb_path)
     except PhotoError:
         raise
     except Exception as exc:  # PIL: corrupt or truncated image
@@ -242,6 +259,9 @@ def _store(data: bytes, full_path: Path, thumb_path: Path) -> None:
 
     try:
         with Image.open(BytesIO(data)) as img:
+            # Open is lazy: the size is known from the header, before a pixel is decoded.
+            if img.width * img.height > settings.photo_max_pixels:
+                raise PhotoError(413, _too_many_pixels())
             # EXIF orientation matters for phone shots: apply it before the
             # resize or thumbs come out sideways.
             img = ImageOps.exif_transpose(img).convert("RGB")
@@ -255,6 +275,13 @@ def _store(data: bytes, full_path: Path, thumb_path: Path) -> None:
             )
     except UnidentifiedImageError as exc:
         raise PhotoError(415, "could not decode the image; the file is corrupt") from exc
+    except Image.DecompressionBombError as exc:
+        # Pillow's own guard, for a header that claims far more than the limit above.
+        raise PhotoError(413, _too_many_pixels()) from exc
+
+
+def _too_many_pixels() -> str:
+    return f"image too large: at most {settings.photo_max_pixels // 1_000_000} megapixels"
 
 
 def _unlink_pair(full_path: Path, thumb_path: Path) -> None:
