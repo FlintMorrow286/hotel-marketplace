@@ -170,7 +170,7 @@ uv run python scripts/load_holds.py --n 100 --units 100   # 100 x 201 на од�
 
 ## Run with Docker
 
-Скопируйте .env.example в .env, задайте сгенерированные значения для JWT_SECRET, WEBHOOK_SEAL_KEY и POSTGRES_PASSWORD, затем запустите docker compose up --build -d. Настройки прокси и резервного копирования описаны в docs/DEPLOY.md.
+Скопируйте .env.example в .env, задайте сгенерированные значения для JWT_SECRET, WEBHOOK_SEAL_KEY и POSTGRES_PASSWORD, а в APP_BASE_URL — публичный https-адрес (в примере стоит адрес для разработки, с ним `app` и `jobs` завершаются при старте с ConfigError), затем запустите docker compose up --build -d. Настройки прокси и резервного копирования описаны в docs/DEPLOY.md.
 
 ## Dev services
 
