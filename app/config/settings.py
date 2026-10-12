@@ -8,7 +8,7 @@ import os
 import urllib.parse
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     log_level: str = Field(default="info")
     # Run in-process pollers only in the dedicated jobs process when scaling web workers.
     run_background_jobs: bool = Field(default=True)
+    # Swagger UI, ReDoc and /openapi.json. Unset: on while developing, off in production, where
+    # they would publish the whole endpoint list and the page loads its scripts from a CDN.
+    api_docs: bool | None = Field(default=None)
 
     # ----- Database -----
     database_url: str = "postgresql://hotel_user:hotel_pass@localhost:5432/hotel_mp"
@@ -186,9 +189,19 @@ class Settings(BaseSettings):
     # ----- Sentry -----
     sentry_dsn: str = Field(default="")
 
+    @field_validator("api_docs", mode="before")
+    @classmethod
+    def _blank_api_docs_is_unset(cls, value: object) -> object:
+        # Compose passes API_DOCS through even when the operator never set it.
+        return None if isinstance(value, str) and not value.strip() else value
+
     @property
     def is_dev(self) -> bool:
         return self.app_env in ("local", "dev", "test")
+
+    @property
+    def docs_enabled(self) -> bool:
+        return self.is_dev if self.api_docs is None else self.api_docs
 
     @property
     def project_root(self) -> Path:

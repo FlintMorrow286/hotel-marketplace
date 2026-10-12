@@ -10,6 +10,7 @@ x-backend-environment: &backend-environment
   WEBHOOK_SEAL_KEY: "${WEBHOOK_SEAL_KEY:?Set WEBHOOK_SEAL_KEY in .env}"
   WEBHOOK_SEAL_KEY_PREVIOUS: "${WEBHOOK_SEAL_KEY_PREVIOUS:-}"
   MEDIA_DIR: /app/media
+  API_DOCS: "${API_DOCS:-}"
   FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
 
 # `app` builds the image; `jobs` runs the same one. Two services that both build under one tag

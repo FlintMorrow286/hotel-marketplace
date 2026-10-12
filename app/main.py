@@ -107,11 +107,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    docs = settings.docs_enabled
     app = FastAPI(
         title="Hotel Marketplace API",
         version="0.1.0",
         description="B2B2C accommodation marketplace — booking core",
-        docs_url="/docs",
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+        openapi_url="/openapi.json" if docs else None,
         lifespan=lifespan,
     )
 

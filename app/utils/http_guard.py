@@ -107,7 +107,8 @@ class SecurityHeadersMiddleware:
             return
 
         https = scope.get("scheme") == "https"
-        with_csp = not scope["path"].startswith(_NO_CSP_PREFIXES)
+        # Only while those pages exist: with the docs off, /docs is the SPA's own fallback page.
+        with_csp = not (settings.docs_enabled and scope["path"].startswith(_NO_CSP_PREFIXES))
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
