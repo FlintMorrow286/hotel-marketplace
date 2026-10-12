@@ -478,11 +478,21 @@ async def _record_payment(
     status: str,
     external_id: str | None,
 ) -> None:
+    """Write one provider event down, once.
+
+    An idempotent provider answers a repeated pay or refund with the same external id; that
+    is one event, not two (a retry after a lost response used to leave two `succeeded` rows
+    for one charge, which a ledger sum would count twice). Events without an id, such as
+    failed attempts, are each their own row.
+    """
     await conn.execute(
         """
         INSERT INTO payment (booking_id, provider, amount, status, external_id)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT DO NOTHING
+        SELECT $1::uuid, $2::text, $3::numeric, $4::text, $5::text
+        WHERE $5::text IS NULL
+           OR NOT EXISTS (
+                SELECT 1 FROM payment
+                WHERE booking_id = $1::uuid AND status = $4::text AND external_id = $5::text)
         """,
         booking_id,
         provider,
