@@ -82,7 +82,7 @@ Staff sign in at `/admin/login`. Running it again with the same email fails on t
 | HOLD_TTL_MIN | 15 | Minutes a hold keeps the inventory. `app` and `jobs` get the same value from here. |
 | ACCESS_TOKEN_TTL_MIN, JWT_ALGORITHM | 60, HS256 | Lifetime of partner and staff sessions in minutes; token algorithm. |
 | TELEGRAM_BOT_TOKEN | unset | Starts the partner notification bot in the `jobs` process. |
-| SENTRY_DSN | unset | Error reporting. An error carries its exception, stack trace and request line; local variables, request bodies, the `X-Booking-Token` header and the log lines before it are not sent (`app/utils/sentry.py`). Error-level log lines are sent as events, with their text. |
+| SENTRY_DSN | unset | Error reporting. An error carries its exception, stack trace and request line; local variables, request bodies, the `X-Booking-Token` header, the iCal feed token in the URL and the log lines before it are not sent (`app/utils/sentry.py`). Error-level log lines are sent as events, with their text. |
 | PAYMENT_MODE, ALLOW_PRIVATE_TARGETS | stub, false | Production refuses to start with any other payment mode or with private targets on, and says so. |
 
 The containers get every key of `.env.example` and nothing else from `.env`; the lines Compose fixes itself (`APP_ENV`, `APP_HOST`, `APP_PORT`, `DATABASE_URL`, `REDIS_URL`, `MEDIA_DIR`, `RUN_BACKGROUND_JOBS`) win over the file. `tests/test_compose_env.py` fails when a key is added to `.env.example` and not to `docker-compose.yml`. A variable left unset keeps the application's default.
@@ -173,6 +173,12 @@ image ships `scripts/rotate_seal_key.py` to change it without stopping deliverie
   outage answers 200 with `"status": "degraded"` and `"redis": "error"`: Redis only backs the rate
   limiter, which counts in memory while it is away, so an outage must not take every instance out of
   rotation. `/healthz` is liveness only.
+- Logs hold URLs. uvicorn's access log, and the access log of any reverse proxy in front, list every request path, and
+  the iCal feed's only credential is in its path (`/v1/ical/<token>.ics`: a calendar client cannot send a header). The
+  token is therefore in `docker compose logs app` and in the proxy's log, and whoever can read those can read the
+  feed, which lists the booking codes and the dates of the unit type. A partner changes the token with
+  `POST /v1/partner/unit-types/{id}/ical-feed` and the old address stops working at once. Keep these logs out of
+  shipping to third parties, or blank that path where they are shipped. Sentry does not get it (`SENTRY_DSN` above).
 
 ## What was exercised
 
@@ -251,6 +257,13 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   the partner's e-mail as plain text: in frame variables (`data`, `body`, `body_bytes`, `scope`, `request`), in the
   request body and in the request headers. Now none of them appears and the same three events arrive. The unit tests
   fail real routes the same way and fail if any of the four options is removed.
+- The same measurement for the iCal feed, whose credential is in the URL path: with the database stopped, `GET
+  /v1/ical/<token>.ics` answers 500 and the event carried the token in `request.url` (the SDK's scrubber does not read
+  the URL, and the route template in `transaction` is harmless). `before_send` now sends `/v1/ical/[Filtered].ics`; the
+  feed still answers 200 when the database is up. A test reads the OpenAPI paths of the real application and fails
+  for a route with a `token`, `secret`, `password` or `api_key` path parameter that no pattern in `app/utils/sentry.py`
+  covers. The token does stay in uvicorn's access log (one line per request, measured), see "Checking a running
+  system".
 
 ## Not verified
 
