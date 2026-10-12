@@ -11,6 +11,7 @@ from app.modules.booking import service as booking_service
 from app.modules.payment import service as payment_service
 from app.modules.property import service as property_service
 from app.modules.property.schemas import PropertyCreate
+from app.utils.tz import today_at
 
 
 async def _create_booking(conn: asyncpg.Connection, unit_type_id: str, checkin: dt.date) -> dict:
@@ -31,7 +32,7 @@ async def test_partner_listing_omits_void_commission_but_keeps_accrued_amount(
     committed_conn: asyncpg.Connection, monkeypatch
 ) -> None:
     monkeypatch.setattr(legal, "COMMISSION_ON_PENALTY", True)
-    today = dt.date.today()
+    today = today_at("Europe/Simferopol")  # the property's date, not the server's
     partner_id = await auth_service.register_partner(
         committed_conn,
         PartnerRegisterRequest(

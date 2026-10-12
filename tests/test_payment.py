@@ -16,8 +16,10 @@ from app.modules.payment import service
 from app.modules.payment.provider import FailProvider, get_payment_provider
 from app.modules.property import service as property_service
 from app.modules.property.schemas import PropertyCreate
+from app.utils.tz import today_at
 
-TODAY = dt.date.today()
+# The property's date, not the server's: see TODAY in test_booking.py.
+TODAY = today_at("Europe/Simferopol")
 
 
 async def _seed_unit(conn: asyncpg.Connection, email: str, total_units: int = 1) -> str:

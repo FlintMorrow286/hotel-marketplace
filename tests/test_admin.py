@@ -19,8 +19,10 @@ from app.modules.booking import service as booking_service
 from app.modules.payment import service as payment_service
 from app.modules.property import service as property_service
 from app.modules.property.schemas import PropertyCreate
+from app.utils.tz import today_at
 
-TODAY = dt.date.today()
+# The property's date, not the server's: see TODAY in test_booking.py.
+TODAY = today_at("Europe/Simferopol")
 
 
 async def _seed(conn: asyncpg.Connection, email: str, base_price: float = 3000) -> dict:

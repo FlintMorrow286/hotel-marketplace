@@ -20,8 +20,11 @@ from app.modules.booking import service
 from app.modules.booking.service import Conflict, NotAvailable
 from app.modules.property import service as property_service
 from app.modules.property.schemas import PropertyCreate
+from app.utils.tz import today_at
 
-TODAY = dt.date.today()
+# The date at the properties these tests create (Europe/Simferopol, the default). It is the
+# server's date plus one from 21:00 to 24:00 UTC, and a web hold for an earlier date is refused.
+TODAY = today_at("Europe/Simferopol")
 
 
 async def _seed_unit(
