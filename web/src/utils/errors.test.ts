@@ -4,6 +4,10 @@ import { humanError, isTooManyAttempts, TOO_MANY_ATTEMPTS } from "./errors";
 
 const knownErrors = [
   {
+    detail: "dates not available: check-in date is in the past",
+    message: "Дата заезда уже прошла. Выберите другие даты.",
+  },
+  {
     detail: "dates not available",
     message: "На эти даты мест нет. Выберите другие.",
   },

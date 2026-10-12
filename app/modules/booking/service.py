@@ -19,6 +19,7 @@ import asyncpg
 from app.config.settings import settings
 from app.modules.rate import service as rate_service
 from app.utils.logger import get_logger
+from app.utils.tz import today_at
 
 log = get_logger(__name__)
 
@@ -188,11 +189,22 @@ async def create_hold(
 
     # ---- unit type + price
     ut = await conn.fetchrow(
-        "SELECT id::text, property_id::text, base_price, total_units FROM unit_type WHERE id = $1",
+        """
+        SELECT ut.id::text, ut.property_id::text, ut.base_price, ut.total_units, p.timezone
+        FROM unit_type ut
+        JOIN property p ON p.id = ut.property_id
+        WHERE ut.id = $1
+        """,
         unit_type_id,
     )
     if ut is None:
         raise NotAvailable("unit type not found")
+    # Inventory rows for past nights stay in the table, so without this a guest could hold
+    # and pay for a stay that has already happened. "Today" is the property's: a guest may
+    # book the night that is still today there. A channel pushes what an OTA already sold,
+    # which can be a stay already under way, so only the web path is held to it.
+    if origin == "web" and checkin < today_at(ut["timezone"]):
+        raise NotAvailable("check-in date is in the past")
 
     # ---- lock inventory rows, ordered by (unit_type_id, date)
     locked = await _load_or_lock_inventory(conn, unit_type_id, checkin, checkout)

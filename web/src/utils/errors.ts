@@ -11,6 +11,7 @@ import { ApiException } from "@/api/client";
 
 const MESSAGES: ReadonlyArray<[RegExp, string]> = [
   // hold
+  [/check-in date is in the past/i, "Дата заезда уже прошла. Выберите другие даты."],
   [/dates not available/i, "На эти даты мест нет. Выберите другие."],
   [/idempotency conflict/i, "Это бронирование уже оформляется. Обновите страницу."],
   [/hold expired/i, "Время бронирования истекло — оформите его заново."],

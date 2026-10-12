@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
@@ -22,6 +21,7 @@ from app.db.tx import serializable, try_lock, unlock
 from app.modules.booking.service import BookingError, release_hold
 from app.modules.payment.provider import PaymentProvider, PaymentResult, get_payment_provider
 from app.utils.logger import get_logger
+from app.utils.tz import today_at as _today_at
 
 log = get_logger(__name__)
 
@@ -224,15 +224,6 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
 def _hold_still_valid(_conn: asyncpg.Connection, _booking: asyncpg.Record) -> bool:
     """Expiry is enforced by the route + DB; kept for future pre-auth checks."""
     return True
-
-
-def _today_at(tz_name: str) -> dt.date:
-    """The calendar date it is right now at the property."""
-    try:
-        zone = ZoneInfo(tz_name)
-    except ZoneInfoNotFoundError:
-        zone = ZoneInfo("UTC")
-    return dt.datetime.now(zone).date()
 
 
 async def _refund_on_record(conn: asyncpg.Connection, booking_id: str) -> asyncpg.Record | None:
