@@ -139,11 +139,13 @@ async def create_hold(
     guest_phone: str,
     idempotency_key: str | None = None,
     origin: str = "web",
+    published_only: bool = False,
 ) -> dict:
     """Reserve inventory for the stay and return the new hold booking.
 
     Raises NotAvailable when there is no free inventory, Conflict when the
-    idempotency key is reused with different request data.
+    idempotency key is reused with different request data. `published_only` is
+    the public API's view: a property the catalog does not show takes no booking.
 
     The caller is responsible for the transaction; tests wrap this in a
     rolled-back transaction, the route wraps it in a committed one.
@@ -209,6 +211,10 @@ async def create_hold(
     # Staff blocked this property: the catalog no longer shows it, but its unit type ids are
     # still known to guests with an old link, and the block has to stop the money too.
     if origin == "web" and ut["property_status"] == "blocked":
+        raise NotAvailable("property is not available for booking")
+    # A draft or a property awaiting moderation keeps valid unit type ids too; the public API
+    # takes bookings only where the catalog shows the property.
+    if published_only and ut["property_status"] != "published":
         raise NotAvailable("property is not available for booking")
 
     # ---- lock inventory rows, ordered by (unit_type_id, date)

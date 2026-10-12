@@ -47,7 +47,7 @@ async def _inventory(conn, ut: str) -> tuple[int, int]:
 
 @pytest.mark.asyncio
 async def test_a_live_hold_still_replays(committed_conn) -> None:
-    ut = await _seed_unit(committed_conn, "key-live@example.com")
+    ut = await _seed_unit(committed_conn, "key-live@example.com", published=True)
     body = _body(ut, _guest())
 
     with TestClient(create_app()) as client:
@@ -61,7 +61,7 @@ async def test_a_live_hold_still_replays(committed_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_a_cancelled_hold_does_not_block_the_same_stay(committed_conn) -> None:
-    ut = await _seed_unit(committed_conn, "key-cancel@example.com")
+    ut = await _seed_unit(committed_conn, "key-cancel@example.com", published=True)
     body = _body(ut, _guest())
 
     with TestClient(create_app()) as client:
@@ -80,7 +80,7 @@ async def test_a_cancelled_hold_does_not_block_the_same_stay(committed_conn) -> 
 async def test_an_expired_hold_does_not_block_the_same_stay_before_the_reaper_runs(
     committed_conn,
 ) -> None:
-    ut = await _seed_unit(committed_conn, "key-expired@example.com")
+    ut = await _seed_unit(committed_conn, "key-expired@example.com", published=True)
     body = _body(ut, _guest())
 
     with TestClient(create_app()) as client:
@@ -102,7 +102,7 @@ async def test_an_expired_hold_does_not_block_the_same_stay_before_the_reaper_ru
 
 @pytest.mark.asyncio
 async def test_a_refunded_booking_does_not_block_the_same_stay(committed_conn) -> None:
-    ut = await _seed_unit(committed_conn, "key-refund@example.com")
+    ut = await _seed_unit(committed_conn, "key-refund@example.com", published=True)
     body = _body(ut, _guest())
 
     with TestClient(create_app()) as client:
@@ -122,7 +122,7 @@ async def test_a_refunded_booking_does_not_block_the_same_stay(committed_conn) -
 
 @pytest.mark.asyncio
 async def test_a_confirmed_booking_still_replays(committed_conn) -> None:
-    ut = await _seed_unit(committed_conn, "key-confirmed@example.com")
+    ut = await _seed_unit(committed_conn, "key-confirmed@example.com", published=True)
     body = _body(ut, _guest())
 
     with TestClient(create_app()) as client:
@@ -140,7 +140,7 @@ async def test_a_confirmed_booking_still_replays(committed_conn) -> None:
 @pytest.mark.asyncio
 async def test_a_finished_key_reused_for_another_guest_is_not_a_conflict(committed_conn) -> None:
     """While the booking lives the key is bound to its payload; once it is over it is free."""
-    ut = await _seed_unit(committed_conn, "key-other@example.com")
+    ut = await _seed_unit(committed_conn, "key-other@example.com", published=True)
     first_guest, other_guest = _guest(), _guest()
 
     with TestClient(create_app()) as client:
@@ -156,7 +156,7 @@ async def test_a_finished_key_reused_for_another_guest_is_not_a_conflict(committ
 
 @pytest.mark.asyncio
 async def test_the_retired_key_keeps_the_old_booking_findable(committed_conn) -> None:
-    ut = await _seed_unit(committed_conn, "key-trace@example.com")
+    ut = await _seed_unit(committed_conn, "key-trace@example.com", published=True)
     body = _body(ut, _guest())
 
     with TestClient(create_app()) as client:

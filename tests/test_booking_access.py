@@ -48,7 +48,7 @@ def test_the_token_is_bound_to_the_booking_and_to_the_secret(monkeypatch) -> Non
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ACTIONS)
 async def test_an_action_without_the_token_is_refused(committed_conn, action) -> None:
-    ut = await _seed_unit(committed_conn, f"acc-none-{action}@example.com")
+    ut = await _seed_unit(committed_conn, f"acc-none-{action}@example.com", published=True)
 
     with TestClient(create_app()) as client:
         hold = _hold(client, ut, _guest())
@@ -62,7 +62,9 @@ async def test_an_action_without_the_token_is_refused(committed_conn, action) ->
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ACTIONS)
 async def test_the_token_of_another_booking_does_not_open_this_one(committed_conn, action) -> None:
-    ut = await _seed_unit(committed_conn, f"acc-other-{action}@example.com", total_units=2)
+    ut = await _seed_unit(
+        committed_conn, f"acc-other-{action}@example.com", total_units=2, published=True
+    )
 
     with TestClient(create_app()) as client:
         mine = _hold(client, ut, _guest())
@@ -78,7 +80,7 @@ async def test_the_token_of_another_booking_does_not_open_this_one(committed_con
 
 @pytest.mark.asyncio
 async def test_an_unknown_id_and_a_wrong_token_look_the_same(committed_conn) -> None:
-    ut = await _seed_unit(committed_conn, "acc-same@example.com")
+    ut = await _seed_unit(committed_conn, "acc-same@example.com", published=True)
 
     with TestClient(create_app()) as client:
         hold = _hold(client, ut, _guest())
@@ -96,7 +98,7 @@ async def test_an_unknown_id_and_a_wrong_token_look_the_same(committed_conn) -> 
 @pytest.mark.asyncio
 async def test_the_hold_token_pays_and_the_lookup_token_cancels(committed_conn) -> None:
     """A guest who closed the tab finds the booking by code and email and gets a token back."""
-    ut = await _seed_unit(committed_conn, "acc-flow@example.com")
+    ut = await _seed_unit(committed_conn, "acc-flow@example.com", published=True)
     guest = _guest()
 
     with TestClient(create_app()) as client:
@@ -119,7 +121,7 @@ async def test_the_hold_token_pays_and_the_lookup_token_cancels(committed_conn) 
 
 @pytest.mark.asyncio
 async def test_a_replayed_hold_returns_the_same_token(committed_conn) -> None:
-    ut = await _seed_unit(committed_conn, "acc-replay@example.com")
+    ut = await _seed_unit(committed_conn, "acc-replay@example.com", published=True)
     guest = _guest()
     body = {
         "unit_type_id": ut,

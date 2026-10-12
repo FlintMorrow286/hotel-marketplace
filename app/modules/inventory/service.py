@@ -139,11 +139,15 @@ async def get_availability(
     unit_type_id: str,
     date_from: dt.date,
     date_to: dt.date,
+    *,
+    published_only: bool = False,
 ) -> list[dict]:
     """Per-night availability for the catalog/calendar.
 
     Covers the half-open interval [date_from, date_to): a checkout on
     date_to is not a stay. Missing days are treated as unavailable.
+    `published_only` is the public view: a unit of a property the catalog does
+    not show has no days, exactly like a unit that does not exist.
     """
     if date_to <= date_from:
         raise ValueError("date_to must be after date_from")
@@ -163,6 +167,7 @@ async def get_availability(
                COALESCE(pd.price::float8, ut.base_price::float8) AS price
         FROM inventory_day i
         JOIN unit_type ut ON ut.id = i.unit_type_id
+        JOIN property p ON p.id = ut.property_id
         LEFT JOIN rate_plan rp
                ON rp.unit_type_id = ut.id AND rp.active
         LEFT JOIN price_day pd
@@ -170,10 +175,12 @@ async def get_availability(
         WHERE i.unit_type_id = $1
           AND i.date >= $2
           AND i.date <  $3
+          AND (NOT $4::boolean OR p.status = 'published')
         ORDER BY i.date
         """,
         unit_type_id,
         date_from,
         date_to,
+        published_only,
     )
     return [dict(r) for r in priced]

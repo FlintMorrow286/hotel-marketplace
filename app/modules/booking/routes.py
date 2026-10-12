@@ -102,6 +102,7 @@ async def create_hold(
                 guest_email=str(data.guest.email),
                 guest_phone=data.guest.phone,
                 idempotency_key=idempotency_key,
+                published_only=True,
             )
             return row, await _line_dates(conn, row["id"])
 

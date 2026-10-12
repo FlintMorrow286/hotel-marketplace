@@ -99,7 +99,9 @@ async def availability(
     conn = await get_pool().acquire()
     try:
         try:
-            days = await service.get_availability(conn, unit_type_id, date_from, date_to)
+            days = await service.get_availability(
+                conn, unit_type_id, date_from, date_to, published_only=True
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)

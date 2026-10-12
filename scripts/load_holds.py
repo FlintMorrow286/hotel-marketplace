@@ -62,6 +62,8 @@ async def _seed(conn: asyncpg.Connection, units: int, nights: int) -> tuple[str,
             prop.id,
             units,
         )
+        # The public hold route serves published properties only; _cleanup removes this one.
+        await conn.execute("UPDATE property SET status = 'published' WHERE id = $1", prop.id)
         await conn.execute(
             "INSERT INTO inventory_day (unit_type_id, date, available) "
             "SELECT $1, d, $2 FROM generate_series(current_date, current_date + $3::int, '1 day') AS g(d)",

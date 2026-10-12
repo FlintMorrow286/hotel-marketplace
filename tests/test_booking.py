@@ -24,8 +24,14 @@ from app.modules.property.schemas import PropertyCreate
 TODAY = dt.date.today()
 
 
-async def _seed_unit(conn: asyncpg.Connection, email: str, total_units: int = 1) -> str:
-    """Create partner + property + unit_type + 30 days of inventory."""
+async def _seed_unit(
+    conn: asyncpg.Connection, email: str, total_units: int = 1, *, published: bool = False
+) -> str:
+    """Create partner + property + unit_type + 30 days of inventory.
+
+    The property is a draft unless `published`: the public API (HTTP hold, availability) serves
+    only published properties, the service and the channel take drafts by id.
+    """
     partner_id = await auth_service.register_partner(
         conn, PartnerRegisterRequest(email=email, password="secret123", name="Tester")
     )
@@ -50,6 +56,8 @@ async def _seed_unit(conn: asyncpg.Connection, email: str, total_units: int = 1)
         total_units,
         TODAY,
     )
+    if published:
+        await conn.execute("UPDATE property SET status = 'published' WHERE id = $1", prop.id)
     return row["id"]
 
 
@@ -313,7 +321,7 @@ async def test_availability_reflects_a_hold_at_once(committed_conn) -> None:
 
     from app.main import create_app
 
-    ut = await _seed_unit(committed_conn, "b6e@example.com")
+    ut = await _seed_unit(committed_conn, "b6e@example.com", published=True)
     stay_end = TODAY + dt.timedelta(days=2)
     url = f"/v1/availability?unit_type_id={ut}&date_from={TODAY}&date_to={stay_end}"
 

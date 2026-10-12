@@ -57,6 +57,8 @@ async def _seed_unit(conn: asyncpg.Connection, email: str, total_units: int = 1)
         total_units,
         TODAY,
     )
+    # Every test here holds through the public HTTP route, which serves published properties only.
+    await conn.execute("UPDATE property SET status = 'published' WHERE id = $1", prop.id)
     return row["id"]
 
 

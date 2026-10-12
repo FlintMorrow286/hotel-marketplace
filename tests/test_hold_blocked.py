@@ -49,7 +49,8 @@ async def test_a_blocked_property_takes_no_web_booking(db_conn) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["draft", "pending_moderation", "published"])
 async def test_every_other_status_still_books(db_conn, status) -> None:
-    """Drafts are not in the catalog and cannot be reached by a guest; they stay bookable by id."""
+    """The service books drafts by id (the partner's tools and the channel do). The public route
+    does not: see tests/test_public_unpublished.py."""
     ut = await _seed_unit(db_conn, f"blk-{status}@example.com")
     await _set_status(db_conn, ut, status)
 
