@@ -408,7 +408,7 @@ POST /bookings/hold (idempotency-key: <uuid> от клиента)
 - **Токен брони.** `pay`, `cancel`, `refund` требуют `X-Booking-Token` (см. §7.1).
 - **Событие outbox пишется под savepoint** (`outbox.emit`): ошибка записи события (FK, переполнение, любая серверная) теряет событие, но не транзакцию вызывающего; конфликт сериализации внутри транзакции пробрасывается наверх, чтобы сработал повтор `serializable`. Раньше проглоченная ошибка отравляла транзакцию: следующий запрос падал с `InFailedSQLTransactionError`, а `COMMIT` молча становился `ROLLBACK`.
 
-Что должно будить человека (строки лога): `charge-not-returned`, `payment-unrecorded`, `charge-return-unrecorded`, `hold-not-released-after-return`, `outbox-emit-failed` уровня error (потеряно событие брони: каналы не узнали о ней, нужна сверка), `confirmation-failed-after-charge` (информационно: за ним должна идти `charge-returned`), `conflict-answered-503` (если часто — пересмотреть очередь и пул), `payment-stub-outside-dev` (заглушка в боевом окружении).
+Что должно будить человека (строки лога): `charge-not-returned`, `payment-unrecorded` (в том числе со `status=refunded`: провайдер вернул деньги, а запись о возврате не сохранилась), `hold-not-released-after-return`, `outbox-emit-failed` уровня error (потеряно событие брони: каналы не узнали о ней, нужна сверка), `confirmation-failed-after-charge` (информационно: за ним должна идти `charge-returned`), `conflict-answered-503` (если часто — пересмотреть очередь и пул), `payment-stub-outside-dev` (заглушка в боевом окружении).
 
 Оставшийся пробел — исход «неизвестен»: провайдер списал, но вызов закончился исключением. Закрывается журналом попыток с durable-ключами и сверкой с провайдером; это работа вместе с реальным эквайрингом.
 
