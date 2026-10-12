@@ -399,7 +399,9 @@ async def test_the_free_window_is_read_at_the_property_not_at_the_server(
     committed_conn,
 ) -> None:
     """Same check-in date, two time zones 25 hours apart: only one is still free."""
-    checkin = service._today_at("Pacific/Pago_Pago") + dt.timedelta(days=1)
+    # Anchored on the later calendar: Pago Pago + 1 day is already past at Kiritimati during
+    # the one hour a day when the two calendars are two days apart.
+    checkin = service._today_at("Pacific/Kiritimati")
     outcomes = {}
     for tz in ("Pacific/Pago_Pago", "Pacific/Kiritimati"):
         ut = await _seed_unit(committed_conn, f"tz-{tz[-4:].lower()}@example.com")
