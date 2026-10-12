@@ -61,37 +61,53 @@ async def emit(
 
     priority = backlog.PRIORITY_BOOKING if aggregate == "booking" else backlog.PRIORITY_BULK
     limit = settings.outbox_max_pending
+    in_transaction = conn.is_in_transaction()
     try:
-        if not await backlog.admit(conn, priority=priority, limit=limit):
-            await backlog.count_shed(conn, aggregate=aggregate, event_type=event_type)
-            log.warning(
-                "outbox-shed",
-                event_type=event_type,
-                aggregate=aggregate,
-                limit=limit,
-            )
-            return
+        # A savepoint. A statement that fails inside the caller's transaction aborts that whole
+        # transaction in Postgres, so swallowing the error without one left the caller holding a
+        # dead transaction: its next statement failed with InFailedSQLTransactionError (a 500
+        # under load, seen once in 4000 random operations on two workers), or its COMMIT quietly
+        # became a ROLLBACK. With the savepoint only the event is lost.
+        async with conn.transaction():
+            if not await backlog.admit(conn, priority=priority, limit=limit):
+                await backlog.count_shed(conn, aggregate=aggregate, event_type=event_type)
+                log.warning(
+                    "outbox-shed",
+                    event_type=event_type,
+                    aggregate=aggregate,
+                    limit=limit,
+                )
+                return
 
-        await conn.execute(
-            """
-            INSERT INTO outbox_event
-                (aggregate, aggregate_id, event_type, payload, property_id,
-                 priority, shard)
-            VALUES ($1, $2, $3, $4, $5, $6,
-                    abs(hashtext(coalesce($8, $2))) % $7)
-            """,
-            aggregate,
-            aggregate_id,
-            event_type,
-            json.dumps(payload, default=str),
-            property_id,
-            priority,
-            settings.outbox_shard_count,
-            property_id,
-        )
+            await conn.execute(
+                """
+                INSERT INTO outbox_event
+                    (aggregate, aggregate_id, event_type, payload, property_id,
+                     priority, shard)
+                VALUES ($1, $2, $3, $4, $5, $6,
+                        abs(hashtext(coalesce($8, $2))) % $7)
+                """,
+                aggregate,
+                aggregate_id,
+                event_type,
+                json.dumps(payload, default=str),
+                property_id,
+                priority,
+                settings.outbox_shard_count,
+                property_id,
+            )
+    except (asyncpg.SerializationError, asyncpg.DeadlockDetectedError):
+        # Not an outbox fault: the caller's transaction cannot be serialised, and its retry
+        # loop (app.db.tx.serializable) has to see that. Outside a transaction the conflict
+        # was only the event's own, and is as lost as any other failure here.
+        if in_transaction:
+            raise
+        log.warning("outbox-emit-failed", event_type=event_type, error="conflict")
     except Exception as exc:
-        # Never let a logging failure roll back a booking.
-        log.warning("outbox-emit-failed", event_type=event_type, error=str(exc))
+        # Never let a logging failure roll back a booking. A lost booking event is the one that
+        # matters (the channels are not told), so it is logged as an error.
+        record = log.error if aggregate == "booking" else log.warning
+        record("outbox-emit-failed", event_type=event_type, aggregate=aggregate, error=str(exc))
 
 
 async def property_of_unit_type(conn: asyncpg.Connection, unit_type_id: str) -> str | None:
