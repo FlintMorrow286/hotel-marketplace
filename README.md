@@ -185,6 +185,12 @@ API со встроенным фронтендом на порту 8002) как 
 
 ## 📌 Статус
 
-- ✅ Блюпринт архитектуры готов (`docs/ARCHITECTURE.md`)
-- ✅ Юр.вопросы выписаны отдельно (`docs/LEGAL.md`)
-- ⏳ **Дальше:** Slice 0 (Skeleton) — репозиторий, docker-compose, миграции, JWT
+- ✅ Блюпринт архитектуры (`docs/ARCHITECTURE.md`) и юридические вопросы (`docs/LEGAL.md`)
+- ✅ Ядро Phase 1: каталог и поиск, hold → заглушка оплаты → подтверждение, отмена и возврат,
+  кабинет партнёра, админка и отчёт по комиссии, уведомления, iCal, webhooks и channel API
+- ✅ Защита ядра: токен брони для оплаты и отмены, очередь холдов по типу номера, защита от SSRF,
+  отказ от запуска с небезопасной конфигурацией (`docs/ARCHITECTURE.md` §4)
+- ✅ Проверки: pytest, vitest, Playwright (`web/e2e`), `scripts/load_holds.py`; упаковка — Dockerfile и
+  `docker-compose.yml` (`docs/DEPLOY.md`)
+- ⏳ **Дальше:** реальный эквайринг (Tinkoff/YooKassa; интерфейс `PaymentProvider` готов), сверка платежей
+  с провайдером, решения по `docs/LEGAL.md`
