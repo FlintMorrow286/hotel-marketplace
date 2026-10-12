@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import ipaddress
 import socket
+import time
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from typing import Literal, NamedTuple
@@ -31,10 +32,13 @@ class InvalidUrl(UnsafeUrl):
 class _ResolvedTarget(NamedTuple):
     host: str
     port: int
-    address: str
+    addresses: tuple[str, ...]
 
 
 RedirectPolicy = Literal["same-origin", "any-origin"]
+
+# The DNS answer is partner-controlled: it must not turn one request into a burst of connections.
+_MAX_CONNECT_ATTEMPTS = 4
 
 
 _TRANSLATOR_PREFIXES = (
@@ -104,12 +108,13 @@ async def _resolve_target(url: str | httpx.URL) -> _ResolvedTarget:
     normalized = [_normalize_address(address) for address in addresses]
     if not normalized:
         raise InvalidUrl("url hostname did not resolve to any address")
-    # Pin one address; IPv4 first, so a dual-stack host does not land on a family
-    # this machine cannot route.
+    # The whole answer is validated, so the connection may fall back from one address to the
+    # next; IPv4 goes first, so a dual-stack host does not land on a family this machine
+    # cannot route.
     normalized.sort(key=lambda address: (":" in address, address))
     if not settings.allow_private_targets and any(not is_public(address) for address in normalized):
         raise UnsafeUrl(f"{host} points at a non-public address")
-    return _ResolvedTarget(host, port, normalized[0])
+    return _ResolvedTarget(host, port, tuple(dict.fromkeys(normalized)))
 
 
 async def assert_public_url(url: str) -> None:
@@ -153,19 +158,33 @@ class _PinnedNetworkBackend(AsyncNetworkBackend):
         socket_options: Iterable[SOCKET_OPTION] | None = None,
     ) -> AsyncNetworkStream:
         target = self._target.get()
-        if (
-            target is None
-            or _canonical_host(host) != _canonical_host(target.host)
-            or port != target.port
-        ):
-            raise httpcore.ConnectError("connection target has no validated address")
-        return await self._backend.connect_tcp(
-            target.address,
-            port,
-            timeout=timeout,
-            local_address=local_address,
-            socket_options=socket_options,
+        addresses = (
+            target.addresses[:_MAX_CONNECT_ATTEMPTS]
+            if target is not None
+            and _canonical_host(host) == _canonical_host(target.host)
+            and port == target.port
+            else ()
         )
+        deadline = None if timeout is None else time.monotonic() + timeout
+        error: httpcore.ConnectError | httpcore.ConnectTimeout = httpcore.ConnectError(
+            "connection target has no validated address"
+        )
+        for index, address in enumerate(addresses):
+            # An even share of what is left: a dead address cannot use up the whole connect
+            # timeout, and all attempts together never exceed it.
+            attempts_left = len(addresses) - index
+            share = None if deadline is None else (deadline - time.monotonic()) / attempts_left
+            try:
+                return await self._backend.connect_tcp(
+                    address,
+                    port,
+                    timeout=share,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                error = exc
+        raise error
 
     async def connect_unix_socket(
         self,

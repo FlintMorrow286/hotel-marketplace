@@ -7,6 +7,7 @@ import ssl
 from collections.abc import Iterable
 
 import httpcore
+import httpx
 import pytest
 from httpcore._backends.base import SOCKET_OPTION, AsyncNetworkBackend, AsyncNetworkStream
 
@@ -14,7 +15,10 @@ from app.config.settings import settings
 from app.utils import netguard
 
 PUBLIC_IP = "93.184.216.34"
+SECOND_PUBLIC_IP = "93.184.216.35"
+PUBLIC_IPV6 = "2606:2800:220:1:248:1893:25c8:1946"
 PRIVATE_IP = "10.0.0.7"
+PRIVATE_IPV6 = "fd00::7"
 
 
 class _RecordingStream(AsyncNetworkStream):
@@ -58,9 +62,20 @@ class _RecordingStream(AsyncNetworkStream):
 
 
 class _RecordingBackend(AsyncNetworkBackend):
-    def __init__(self, responses: list[bytes]) -> None:
+    """Records every attempt; `down` refuses at once, `blackholed` burns its whole timeout."""
+
+    def __init__(
+        self,
+        responses: list[bytes],
+        *,
+        down: Iterable[str] = (),
+        blackholed: Iterable[str] = (),
+    ) -> None:
         self.responses = iter(responses)
+        self.down = set(down)
+        self.blackholed = set(blackholed)
         self.connections: list[tuple[str, int]] = []
+        self.timeouts: list[float | None] = []
         self.streams: list[_RecordingStream] = []
 
     async def connect_tcp(
@@ -72,6 +87,12 @@ class _RecordingBackend(AsyncNetworkBackend):
         socket_options: Iterable[SOCKET_OPTION] | None = None,
     ) -> AsyncNetworkStream:
         self.connections.append((host, port))
+        self.timeouts.append(timeout)
+        if host in self.blackholed:
+            await asyncio.sleep(timeout or 0)
+            raise httpcore.ConnectTimeout(f"{host} did not answer")
+        if host in self.down:
+            raise httpcore.ConnectError(f"{host} refused the connection")
         stream = _RecordingStream(next(self.responses))
         self.streams.append(stream)
         return stream
@@ -103,6 +124,13 @@ def _install_backend(monkeypatch, backend: _RecordingBackend) -> None:
         "pinned_transport",
         lambda: factory(network_backend=backend),
     )
+
+
+def _answer(monkeypatch, *addresses: str) -> None:
+    async def resolve(host: str, port: int) -> list[str]:
+        return list(addresses)
+
+    monkeypatch.setattr(netguard, "_resolve", resolve)
 
 
 @pytest.fixture(autouse=True)
@@ -275,7 +303,7 @@ async def test_pinned_backend_refuses_a_different_host() -> None:
     target: contextvars.ContextVar[netguard._ResolvedTarget | None] = contextvars.ContextVar(
         "pinned-target", default=None
     )
-    target.set(netguard._ResolvedTarget("hooks.example", 443, PUBLIC_IP))
+    target.set(netguard._ResolvedTarget("hooks.example", 443, (PUBLIC_IP,)))
     backend = _RecordingBackend([_response()])
     guarded = netguard._PinnedNetworkBackend(target, backend)
 
@@ -283,6 +311,118 @@ async def test_pinned_backend_refuses_a_different_host() -> None:
         await guarded.connect_tcp("other.example", 443)
 
     assert backend.connections == []
+
+
+# ---------------------------------------------------------------- fallback
+
+
+@pytest.mark.asyncio
+async def test_next_validated_address_is_tried_when_the_first_is_down(monkeypatch) -> None:
+    _answer(monkeypatch, SECOND_PUBLIC_IP, PUBLIC_IP)
+    backend = _RecordingBackend([_response()], down=[PUBLIC_IP])
+    _install_backend(monkeypatch, backend)
+
+    async with netguard.stream_request(
+        "GET", "https://hooks.example/hook", timeout=2, max_redirects=0
+    ) as response:
+        assert response.status_code == 204
+
+    assert backend.connections == [(PUBLIC_IP, 443), (SECOND_PUBLIC_IP, 443)]
+    assert backend.streams[0].server_hostnames == ["hooks.example"]
+
+
+@pytest.mark.asyncio
+async def test_ipv6_is_the_fallback_of_a_dual_stack_host(monkeypatch) -> None:
+    _answer(monkeypatch, PUBLIC_IPV6, PUBLIC_IP)
+    backend = _RecordingBackend([_response()], down=[PUBLIC_IP])
+    _install_backend(monkeypatch, backend)
+
+    async with netguard.stream_request(
+        "GET", "https://hooks.example/hook", timeout=2, max_redirects=0
+    ) as response:
+        assert response.status_code == 204
+
+    assert backend.connections == [(PUBLIC_IP, 443), (PUBLIC_IPV6, 443)]
+
+
+@pytest.mark.asyncio
+async def test_connect_error_surfaces_after_the_last_attempt(monkeypatch) -> None:
+    addresses = [f"93.184.216.{n}" for n in range(30, 36)]
+    _answer(monkeypatch, *addresses)
+    backend = _RecordingBackend([], down=addresses)
+    _install_backend(monkeypatch, backend)
+
+    with pytest.raises(httpx.ConnectError, match="refused"):
+        async with netguard.stream_request(
+            "GET", "https://hooks.example/hook", timeout=2, max_redirects=0
+        ):
+            pass
+
+    assert len(addresses) > netguard._MAX_CONNECT_ATTEMPTS
+    assert backend.connections == [
+        (address, 443) for address in addresses[: netguard._MAX_CONNECT_ATTEMPTS]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_private_address_in_the_answer_refuses_all_of_it(monkeypatch) -> None:
+    """The fallback must not be a way to reach the private half of a mixed answer."""
+    # IPv4 sorts first, so the private address is the one a fallback would reach last.
+    _answer(monkeypatch, PUBLIC_IP, PRIVATE_IPV6)
+    backend = _RecordingBackend([_response()], down=[PUBLIC_IP])
+    _install_backend(monkeypatch, backend)
+
+    with pytest.raises(netguard.UnsafeUrl):
+        async with netguard.stream_request(
+            "GET", "https://hooks.example/hook", timeout=2, max_redirects=0
+        ):
+            pass
+
+    assert backend.connections == []
+
+
+@pytest.mark.asyncio
+async def test_attempts_share_one_connect_timeout(monkeypatch) -> None:
+    _answer(monkeypatch, PUBLIC_IP, SECOND_PUBLIC_IP)
+    backend = _RecordingBackend([], blackholed=[PUBLIC_IP, SECOND_PUBLIC_IP])
+    _install_backend(monkeypatch, backend)
+
+    with pytest.raises(httpx.ConnectTimeout):
+        async with netguard.stream_request(
+            "GET", "https://hooks.example/hook", timeout=0.4, max_redirects=0
+        ):
+            pass
+
+    assert len(backend.timeouts) == 2
+    assert backend.timeouts[0] == pytest.approx(0.2, abs=0.05)
+    # Each blackholed attempt burned its whole share, so the shares add up to the timeout.
+    assert sum(backend.timeouts) <= 0.4
+
+
+@pytest.mark.asyncio
+async def test_real_sockets_fall_back_to_the_address_that_answers(monkeypatch) -> None:
+    """The real backend's refusal is what the fallback has to catch, not just the fake's."""
+    monkeypatch.setattr(settings, "allow_private_targets", True)
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(_response())
+        await writer.drain()
+        writer.close()
+
+    try:
+        server = await asyncio.start_server(serve, "127.0.0.2", 0)
+    except OSError:
+        pytest.skip("this host has no 127.0.0.2 loopback address")
+    port = server.sockets[0].getsockname()[1]
+    # Nothing listens on 127.0.0.1:port, so the first attempt is refused for real.
+    _answer(monkeypatch, "127.0.0.1", "127.0.0.2")
+
+    async with server:
+        async with netguard.stream_request(
+            "GET", f"http://hooks.example:{port}/hook", timeout=2, max_redirects=0
+        ) as response:
+            assert response.status_code == 204
 
 
 def test_redacted_url_drops_userinfo_query_and_fragment() -> None:
