@@ -4,11 +4,15 @@
 Goes through the database directly (a partner doing the same via the cabinet
 ends up with the same rows). Idempotent — safe to re-run.
 
+The partner and admin accounts it creates have published passwords, so it
+refuses to run unless APP_ENV is local, dev or test.
+
     uv run python scripts/seed_demo.py
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
@@ -19,6 +23,7 @@ import asyncpg
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from app.config.settings import settings  # noqa: E402
 from app.db.pool import close_pool, init_pool  # noqa: E402
 from app.utils.logger import get_logger  # noqa: E402
 
@@ -175,6 +180,22 @@ async def _seed_bookings(conn: asyncpg.Connection, partner_id: str) -> None:
 
 
 async def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--allow-any-database",
+        action="store_true",
+        help="run although APP_ENV is not local/dev/test",
+    )
+    args = parser.parse_args()
+    if not settings.is_dev and not args.allow_any_database:
+        print(
+            "refusing to create accounts with published passwords: "
+            f"APP_ENV={settings.app_env!r} is not a development environment; "
+            "pass --allow-any-database to do it anyway",
+            file=sys.stderr,
+        )
+        return 2
+
     pool = await init_pool()
     try:
         async with pool.acquire() as conn:
