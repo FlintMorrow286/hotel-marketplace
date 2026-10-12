@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-bash scripts/dev_services.sh
+bash scripts/start_services.sh
 
 if [[ ! -f web/dist/index.html ]]; then
     (cd web && npm run build)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Setup for a fresh clone or sandbox: Python and web dependencies, a .env with generated
-# secrets, and local PostgreSQL + Redis. Idempotent: it changes nothing that already exists,
-# so it is also what brings the services back after a restart.
+# secrets, and PostgreSQL + Redis (local, or in Docker where there are none). Idempotent: it
+# changes nothing that already exists, so it is also what brings the services back after a restart.
 #
 #     bash scripts/sandbox_setup.sh
 #
@@ -12,6 +12,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 status=0
 
 echo "== python dependencies"
+# A cache left by another user (root in an earlier sandbox) is read-only here: use a private one.
+uv_cache="${UV_CACHE_DIR:-$HOME/.cache/uv}"
+mkdir -p "$uv_cache" 2>/dev/null || true
+if [[ ! -w "$uv_cache" ]]; then
+    export UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache-$(id -u)"
+    echo "uv cache $uv_cache is not writable; using $UV_CACHE_DIR"
+fi
 uv sync --extra bot || status=1
 
 echo "== web dependencies"
@@ -42,7 +49,7 @@ PY
     echo "created .env from .env.example with a generated WEBHOOK_SEAL_KEY and JWT_SECRET"
 fi
 
-echo "== local PostgreSQL and Redis"
-bash scripts/dev_services.sh || status=1
+echo "== PostgreSQL and Redis"
+bash scripts/start_services.sh || status=1
 
 exit "$status"
