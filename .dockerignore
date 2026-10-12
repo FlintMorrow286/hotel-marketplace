@@ -15,7 +15,8 @@ __pycache__/
 .mypy_cache/
 tests/
 docs/
-scripts/
+scripts/*
+!scripts/check_invariants.py
 media/
 web/node_modules/
 web/dist/

@@ -31,6 +31,8 @@ RUN groupadd --system app \
 
 COPY --chown=app:app app/ ./app/
 COPY --chown=app:app migrations/ ./migrations/
+# The read-only integrity checker, for `docker compose exec app python -m scripts.check_invariants`.
+COPY --chown=app:app scripts/check_invariants.py ./scripts/check_invariants.py
 COPY --from=frontend --chown=app:app /web/dist/ ./web/dist/
 
 USER app
