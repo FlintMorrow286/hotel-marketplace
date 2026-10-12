@@ -36,6 +36,7 @@ Set APP_BASE_URL to the externally visible HTTPS origin. WEB_PORT controls the p
 | WEB_CONCURRENCY | 2 | Uvicorn workers per API container. The jobs service always uses one. |
 | FORWARDED_ALLOW_IPS | 127.0.0.1 | Uvicorn peers allowed to supply forwarded client addresses. |
 | LOG_LEVEL | info | Application log level. |
+| API_DOCS | unset | Unset means off in production. `true` serves Swagger UI (`/docs`), ReDoc and `/openapi.json`, which list every endpoint and load their scripts from a CDN. |
 
 ## Web workers, jobs, and proxy trust
 
@@ -63,6 +64,8 @@ Back up both data sets on a schedule and test restores before relying on them. A
   return, no refund made twice, commission and outbox events that match the booking states, and a
   warning when the hold reaper is behind. Exit status 1 means a violation; `--json` for a scheduler.
   Run it from cron and alert on a non-zero exit. `--self-test` proves the checker itself.
+  In the Compose deployment it runs inside the app container, which ships this script and not the
+  chaos and load ones: `docker compose exec -T app python -m scripts.check_invariants`.
 - `scripts/chaos_bookings.py` seeds random guests, a reaper, stop-sells and (in `inproc` mode) a
   payment provider that fails on purpose, then runs the checker. It writes fake data: it refuses a
   database whose name does not contain chaos, test, scratch or tmp. Use a throwaway database.
@@ -74,11 +77,28 @@ Back up both data sets on a schedule and test restores before relying on them. A
 - `/readyz` answers 503 when the database or Redis is down, which is what the container healthchecks
   use; `/healthz` is liveness only.
 
+## What was exercised
+
+On a Docker host (2 CPU, Compose v2), with the files as shipped:
+
+- `docker compose up --build -d --wait`: the image builds once (`app` builds it, `jobs` runs the same one) and
+  `app`, `jobs`, `db` and `redis` report healthy.
+- Uploaded photos survive `docker compose down` and `up` (the `media_data` volume, written by the non-root
+  user) and are served as `image/webp`.
+- With the database stopped `/readyz` answers 503 and the container turns unhealthy; when the database is back
+  it recovers without a restart.
+- The backup commands above: the `pg_dump` output restores into an empty database with the same tables and row
+  counts, and `docker compose cp` copies the photo directory.
+- `docker compose exec -T app python -m scripts.check_invariants` reports no violations; `API_DOCS=true` serves
+  `/docs` and `/openapi.json`; without it those paths answer with the web app's own page.
+
 ## Not verified
 
-- Docker is not installed in the development sandbox, so the image was not built and the Compose stack was not started.
-- Container healthchecks, reverse-proxy networking, persistent-volume ownership, and backup/restore commands were not exercised against Docker.
-- The Dockerfile and Compose configuration received static checks only; they still need a real Docker build and deployment smoke test.
+- A reverse proxy in front: trusted-proxy handling through a real hop, TLS termination, HSTS over real HTTPS.
+- Several `app` replicas, or `WEB_CONCURRENCY` above 2, under load. `scripts/load_holds.py` refuses a production
+  environment, so the hold queue was measured outside the production container.
+- Restoring a backup on another host.
+- Real payments: `PAYMENT_MODE=stub` is the only implemented provider.
 
 ## What startup refuses
 
