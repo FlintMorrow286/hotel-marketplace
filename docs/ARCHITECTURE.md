@@ -497,6 +497,7 @@ POST /bookings/hold (idempotency-key: <uuid> от клиента)
 | GET | `/partner/ical/export` | partner | Выдать наш iCal-URL |
 | GET | `/admin/partners` | admin | Модерация |
 | POST | `/admin/commission-rules` | admin | Комиссии |
+| PATCH | `/admin/rate-plans/{id}` | admin | `{commission_rate}`: число от 0 до 1 или `null` (ставка по умолчанию, `COMMISSION_DEFAULT_RATE`). Единственный способ изменить комиссию платформы для ночей тарифа: партнёр её не задаёт и видит только свою ставку (UI нет, нужен admin-токен) |
 | GET | `/admin/reports/commission` | admin | Отчёт |
 
 

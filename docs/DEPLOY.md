@@ -74,8 +74,10 @@ Back up both data sets on a schedule and test restores before relying on them. A
   development environment.
 - The log events that need a human are listed in `docs/ARCHITECTURE.md` section 4.8
   (`charge-not-returned`, `payment-unrecorded`, `outbox-emit-failed`, ...).
-- `/readyz` answers 503 when the database or Redis is down, which is what the container healthchecks
-  use; `/healthz` is liveness only.
+- `/readyz` answers 503 when the database is down, which is what the container healthchecks use. A Redis
+  outage answers 200 with `"status": "degraded"` and `"redis": "error"`: Redis only backs the rate
+  limiter, which counts in memory while it is away, so an outage must not take every instance out of
+  rotation. `/healthz` is liveness only.
 
 ## What was exercised
 
@@ -87,6 +89,9 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   user) and are served as `image/webp`.
 - With the database stopped `/readyz` answers 503 and the container turns unhealthy; when the database is back
   it recovers without a restart.
+- With Redis stopped under a running server (a local process, not the container stack): `/readyz` answers 200
+  `degraded`, search keeps working, and the login limiter keeps its ceiling in memory (ten wrong logins pass, the
+  next ones get 429); when Redis is back `/readyz` is `ok` again without a restart.
 - The backup commands above: the `pg_dump` output restores into an empty database with the same tables and row
   counts, and `docker compose cp` copies the photo directory.
 - `docker compose exec -T app python -m scripts.check_invariants` reports no violations; `API_DOCS=true` serves

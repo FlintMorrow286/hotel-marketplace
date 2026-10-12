@@ -199,11 +199,13 @@ def create_app() -> FastAPI:
 
     @app.get("/readyz", tags=["health"])
     async def readyz() -> JSONResponse:
-        """Readiness probe: the database and Redis answer.
+        """Readiness probe: can this instance serve?
 
-        503 when one does not, so a load balancer or a container healthcheck sees it (it
-        used to answer 200 "degraded", which no healthcheck can tell from healthy). The cause
-        goes to the log; an anonymous caller gets "error", not the exception text.
+        503 when the database does not answer, so a load balancer or a container healthcheck
+        sees it (it used to answer 200 "degraded", which no healthcheck can tell from healthy).
+        Redis only backs the rate limiter, which counts in memory without it, so a Redis outage
+        stays 200 and reads "degraded": it must not pull every instance out of rotation. The
+        cause goes to the log; an anonymous caller gets "error", not the exception text.
         """
         from app.db.pool import get_pool
         from app.utils.redis import get_redis
@@ -226,7 +228,7 @@ def create_app() -> FastAPI:
         ok = all(v == "ok" for v in checks.values())
         return JSONResponse(
             {"status": "ok" if ok else "degraded", "checks": checks},
-            status_code=200 if ok else 503,
+            status_code=200 if checks["db"] == "ok" else 503,
         )
 
     # SPA fallback — registered LAST, so it can never shadow the API.

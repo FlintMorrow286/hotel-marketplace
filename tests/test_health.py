@@ -38,13 +38,16 @@ async def test_not_ready_when_the_database_is_down(committed_conn, monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_not_ready_when_redis_is_down(committed_conn, monkeypatch) -> None:
+async def test_a_redis_outage_is_reported_but_keeps_the_instance_in_rotation(
+    committed_conn, monkeypatch
+) -> None:
+    """Redis only backs the limiter, which falls back to counting in memory."""
     with TestClient(create_app()) as client:
         monkeypatch.setattr("app.utils.redis.get_redis", lambda: _DeadRedis())
         response = client.get("/readyz")
 
-    assert response.status_code == 503
-    assert response.json()["checks"] == {"db": "ok", "redis": "error"}
+    assert response.status_code == 200
+    assert response.json() == {"status": "degraded", "checks": {"db": "ok", "redis": "error"}}
 
 
 @pytest.mark.asyncio
