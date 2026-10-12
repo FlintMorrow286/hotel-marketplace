@@ -153,6 +153,10 @@ def create_app() -> FastAPI:
 
     install_conflict_handler(app)
 
+    from app.utils.http_guard import install_http_guards
+
+    install_http_guards(app)
+
     # ---- single-app: serve the built frontend from one origin -------------
     # Static assets first (exact paths), then the SPA fallback so any deep
     # link (/search, /property/abc) lands on index.html for React Router.

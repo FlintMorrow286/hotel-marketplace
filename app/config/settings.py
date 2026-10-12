@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     # How often the outbox worker claims a batch. Exposed for tests.
     outbox_poll_interval_sec: int = Field(default=15)
 
+    # ----- Request bodies -----
+    # The most a request body may carry (a photo upload gets photo_max_bytes plus framing).
+    # Checked before the body is parsed or spooled to disk.
+    max_body_bytes: int = Field(default=1024 * 1024)
+
     # ----- Public endpoints that take guesses -----
     # Attempts per client address per window; one account or booking code gets
     # 3x that across all addresses (app/utils/ratelimit_http.py). Raise them if
