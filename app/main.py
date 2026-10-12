@@ -98,8 +98,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     for task in background_tasks:
         task.cancel()
+    # return_exceptions: a task that died on its own must not skip closing the pools below.
     with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.gather(*background_tasks)
+        results = await asyncio.gather(*background_tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                log.error("background-task-failed", error=repr(result))
 
     await close_redis()
     await close_pool()

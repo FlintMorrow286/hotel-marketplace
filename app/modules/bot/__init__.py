@@ -160,12 +160,18 @@ async def bot_loop(token: str) -> None:
     """
     from aiogram import Bot
 
-    bot = Bot(token=token)
-    dp = build_dispatcher()
-    log.info("bot-started")
+    bot = None
     try:
-        await dp.start_polling(bot, allowed_updates=[])
+        # A malformed token raises here, and must be logged like any other failure of the bot.
+        bot = Bot(token=token)
+        dp = build_dispatcher()
+        log.info("bot-started")
+        # handle_signals=False: by default aiogram takes SIGTERM and SIGINT over from uvicorn and, once polling is
+        # over, leaves handlers that do nothing, so `docker stop` never reaches the server and the container is
+        # killed after its grace period.
+        await dp.start_polling(bot, allowed_updates=[], handle_signals=False)
     except Exception as exc:
         log.error("bot-polling-failed", error=str(exc))
     finally:
-        await bot.session.close()
+        if bot is not None:
+            await bot.session.close()

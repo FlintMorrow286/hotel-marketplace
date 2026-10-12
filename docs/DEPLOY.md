@@ -81,7 +81,7 @@ Staff sign in at `/admin/login`. Running it again with the same email fails on t
 | LOGIN_LIMIT_PER_MIN, REGISTER_LIMIT_PER_MIN, LOOKUP_LIMIT_PER_MIN, HOLD_LIMIT_PER_MIN, AVAILABILITY_LIMIT_PER_MIN, SEARCH_LIMIT_PER_MIN, PHOTO_UPLOAD_LIMIT_PER_MIN, ICAL_SYNC_LIMIT_PER_MIN | 10, 5, 10, 20, 120, 240, 20, 6 | Requests per client address per minute. While Redis is down each Uvicorn worker counts for itself, so the ceiling becomes the limit times `WEB_CONCURRENCY`. |
 | HOLD_TTL_MIN | 15 | Minutes a hold keeps the inventory. `app` and `jobs` get the same value from here. |
 | ACCESS_TOKEN_TTL_MIN, JWT_ALGORITHM | 60, HS256 | Lifetime of partner and staff sessions in minutes; token algorithm. |
-| TELEGRAM_BOT_TOKEN | unset | Starts the partner notification bot in the `jobs` process. |
+| TELEGRAM_BOT_TOKEN | unset | Starts the partner notification bot in the `jobs` process, which long-polls api.telegram.org (outbound HTTPS from the container). A token that is malformed or that Telegram rejects is logged once as `bot-polling-failed` (error level) and the bot stays off; nothing else in `jobs` is affected. |
 | SENTRY_DSN | unset | Error reporting. An error carries its exception, stack trace and request line; local variables, request bodies, the `X-Booking-Token` header, the iCal feed token in the URL and the log lines before it are not sent (`app/utils/sentry.py`). Error-level log lines are sent as events, with their text. |
 | PAYMENT_MODE, ALLOW_PRIVATE_TARGETS | stub, false | Production refuses to start with any other payment mode or with private targets on, and says so. |
 
@@ -264,6 +264,15 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   for a route with a `token`, `secret`, `password` or `api_key` path parameter that no pattern in `app/utils/sentry.py`
   covers. The token does stay in uvicorn's access log (one line per request, measured), see "Checking a running
   system".
+- The Telegram bot in `jobs`, with `TELEGRAM_BOT_TOKEN` set in `.env` (three runs, then `docker compose stop`). No token:
+  `telegram-bot-skipped`, both containers stop in under a second with exit code 0 and the `shutdown` line. Before the
+  fix a malformed token left no line in the log while the stack ran, and showed up as `Application shutdown failed`
+  (the Redis and database pools never closed) when `jobs` stopped; a well-formed token that Telegram does not know
+  logged `bot-polling-failed` once, but `docker compose stop jobs` then took 10.2 s and ended with exit code 137, because
+  aiogram's `start_polling` replaces uvicorn's SIGTERM and SIGINT handlers and leaves ones that do nothing. Now both
+  log `bot-polling-failed` at start (`Token is invalid!`, `Telegram server says - Unauthorized`) and `jobs` and `app`
+  stop in under a second with exit code 0. A bot that polls successfully needs a real token and was not exercised; a
+  unit test checks, with Telegram's answer stubbed, that polling leaves the SIGTERM and SIGINT handlers alone.
 
 ## Not verified
 
