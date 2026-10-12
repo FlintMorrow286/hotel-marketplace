@@ -12,6 +12,24 @@ x-backend-environment: &backend-environment
   MEDIA_DIR: /app/media
   API_DOCS: "${API_DOCS:-}"
   FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
+  # The rest of .env.example. A key without a value takes what the shell or .env gives it and,
+  # when neither does, stays unset, so the application's own default applies. A key that is not
+  # named here never reaches the containers (tests/test_compose_env.py keeps the two in step).
+  ALLOW_PRIVATE_TARGETS:
+  PAYMENT_MODE:
+  JWT_ALGORITHM:
+  ACCESS_TOKEN_TTL_MIN:
+  HOLD_TTL_MIN:
+  LOGIN_LIMIT_PER_MIN:
+  REGISTER_LIMIT_PER_MIN:
+  LOOKUP_LIMIT_PER_MIN:
+  HOLD_LIMIT_PER_MIN:
+  AVAILABILITY_LIMIT_PER_MIN:
+  SEARCH_LIMIT_PER_MIN:
+  PHOTO_UPLOAD_LIMIT_PER_MIN:
+  ICAL_SYNC_LIMIT_PER_MIN:
+  TELEGRAM_BOT_TOKEN:
+  SENTRY_DSN:
 
 # `app` builds the image; `jobs` runs the same one. Two services that both build under one tag
 # make `docker compose build` fail ("image ... already exists").

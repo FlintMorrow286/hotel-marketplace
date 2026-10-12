@@ -78,6 +78,14 @@ Staff sign in at `/admin/login`. Running it again with the same email fails on t
 | FORWARDED_ALLOW_IPS | 127.0.0.1 | Uvicorn peers allowed to supply forwarded client addresses. |
 | LOG_LEVEL | info | Application log level. |
 | API_DOCS | unset | Unset means off in production. `true` serves Swagger UI (`/docs`), ReDoc and `/openapi.json`, which list every endpoint and load their scripts from a CDN. |
+| LOGIN_LIMIT_PER_MIN, REGISTER_LIMIT_PER_MIN, LOOKUP_LIMIT_PER_MIN, HOLD_LIMIT_PER_MIN, AVAILABILITY_LIMIT_PER_MIN, SEARCH_LIMIT_PER_MIN, PHOTO_UPLOAD_LIMIT_PER_MIN, ICAL_SYNC_LIMIT_PER_MIN | 10, 5, 10, 20, 120, 240, 20, 6 | Requests per client address per minute. While Redis is down each Uvicorn worker counts for itself, so the ceiling becomes the limit times `WEB_CONCURRENCY`. |
+| HOLD_TTL_MIN | 15 | Minutes a hold keeps the inventory. `app` and `jobs` get the same value from here. |
+| ACCESS_TOKEN_TTL_MIN, JWT_ALGORITHM | 60, HS256 | Lifetime of partner and staff sessions in minutes; token algorithm. |
+| TELEGRAM_BOT_TOKEN | unset | Starts the partner notification bot in the `jobs` process. |
+| SENTRY_DSN | unset | Error reporting. |
+| PAYMENT_MODE, ALLOW_PRIVATE_TARGETS | stub, false | Production refuses to start with any other payment mode or with private targets on, and says so. |
+
+The containers get every key of `.env.example` and nothing else from `.env`; the lines Compose fixes itself (`APP_ENV`, `APP_HOST`, `APP_PORT`, `DATABASE_URL`, `REDIS_URL`, `MEDIA_DIR`, `RUN_BACKGROUND_JOBS`) win over the file. `tests/test_compose_env.py` fails when a key is added to `.env.example` and not to `docker-compose.yml`. A variable left unset keeps the application's default.
 
 ## Web workers, jobs, and proxy trust
 
@@ -168,6 +176,17 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   only the new key reads the token; a second run reports it already on the current key and leaves the token as it
   is; with `WEBHOOK_SEAL_KEY_PREVIOUS` emptied the stack is healthy (`/readyz` 200) and the script still exits 0;
   a secret sealed by a key that is in neither variable is reported as unsealable, exit 2.
+- On the Compose stack (two workers) with Redis stopped, `/readyz` answers 200 `degraded` and 30 wrong logins give
+  20 answers of 401 and then 10 of 429: each worker counts its own ten. About a second after Redis is back `/readyz`
+  is `ok` again. With the database stopped `/readyz` answers 503 (`/healthz` stays 200) and about two seconds after
+  it is back it answers 200 with the data intact.
+- Which `.env` values reach the containers, in four runs. A copy of `.env.example` with `LOGIN_LIMIT_PER_MIN=3`,
+  `HOLD_LIMIT_PER_MIN=7` and `HOLD_TTL_MIN=5` gives `app` and `jobs` those values (three wrong logins pass, the fourth
+  gets 429) while `APP_ENV=local` and `APP_PORT=8002` in the same file do not change the fixed `production` and
+  8000; blank `TELEGRAM_BOT_TOKEN` and `SENTRY_DSN` start fine. With only the four required values none of the
+  tunables is set in the containers and the default limit of 10 applies. `PAYMENT_MODE=tinkoff`,
+  `PAYMENT_MODE=fail` and `ALLOW_PRIVATE_TARGETS=true` each stop `app` and `jobs` at boot with a `ConfigError`
+  that names the setting.
 
 ## Not verified
 
