@@ -182,8 +182,11 @@ jobs:
         run: npm run build
 
       - name: Start API
+        # The synced venv, not `uv run`: a live `uv run` holds the uv cache lock, so on a cold
+        # cache the post step of setup-uv (cache prune) waits 300 s for it and fails the job
+        # although every test passed.
         run: |
-          nohup uv run python -m uvicorn app.main:app --host 127.0.0.1 --port 8123 > /tmp/e2e-api.log 2>&1 &
+          nohup .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8123 > /tmp/e2e-api.log 2>&1 &
           echo $! > /tmp/e2e-api.pid
 
       - name: Wait for API readiness
