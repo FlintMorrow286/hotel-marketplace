@@ -17,6 +17,7 @@ tests/
 docs/
 scripts/*
 !scripts/check_invariants.py
+!scripts/rotate_seal_key.py
 media/
 web/node_modules/
 web/dist/

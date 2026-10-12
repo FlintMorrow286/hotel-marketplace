@@ -33,6 +33,8 @@ COPY --chown=app:app app/ ./app/
 COPY --chown=app:app migrations/ ./migrations/
 # The read-only integrity checker, for `docker compose exec app python -m scripts.check_invariants`.
 COPY --chown=app:app scripts/check_invariants.py ./scripts/check_invariants.py
+# The webhook seal key rotation (docs/DEPLOY.md), for `docker compose exec app python -m scripts.rotate_seal_key`.
+COPY --chown=app:app scripts/rotate_seal_key.py ./scripts/rotate_seal_key.py
 COPY --from=frontend --chown=app:app /web/dist/ ./web/dist/
 
 USER app

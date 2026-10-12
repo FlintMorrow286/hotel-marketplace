@@ -70,7 +70,7 @@ Staff sign in at `/admin/login`. Running it again with the same email fails on t
 | POSTGRES_PASSWORD | Required | Database credential; use a generated value. |
 | JWT_SECRET | Required | Application signing key; use a unique random value of at least 32 characters. |
 | WEBHOOK_SEAL_KEY | Required | Fernet key used to seal partner webhook secrets. Generate with the command above. |
-| WEBHOOK_SEAL_KEY_PREVIOUS | Empty | Optional old Fernet key during a key rotation. |
+| WEBHOOK_SEAL_KEY_PREVIOUS | Empty | Optional old Fernet key during a key rotation (see "Rotating WEBHOOK_SEAL_KEY"). |
 | APP_BASE_URL | required | Public https origin used in partner-facing URLs (iCal feed addresses). Startup refuses http and localhost. |
 | APP_PORT | 8000 | Internal Uvicorn port; Compose keeps it fixed and WEB_PORT changes the published host port. |
 | WEB_PORT | 8000 | Host port published by the API service. |
@@ -97,6 +97,25 @@ Create a database dump and copy the photo directory to a separate backup locatio
     docker compose cp app:/app/media ./media-backup
 
 Back up both data sets on a schedule and test restores before relying on them. A database dump does not include uploaded photos.
+
+## Rotating WEBHOOK_SEAL_KEY
+
+`WEBHOOK_SEAL_KEY` seals the secrets of partners' webhook subscriptions; if it is lost they cannot be read. The
+image ships `scripts/rotate_seal_key.py` to change it without stopping deliveries:
+
+1. Generate a new Fernet key. In `.env` move the current value to `WEBHOOK_SEAL_KEY_PREVIOUS` and put the new key
+   in `WEBHOOK_SEAL_KEY`.
+2. `docker compose up -d` recreates `app` and `jobs` with both keys; the old one stays readable as the fallback.
+3. Re-seal every secret under the new key:
+
+   ```sh
+   docker compose exec -T app python -m scripts.rotate_seal_key
+   ```
+
+   It prints how many rows it re-sealed and is safe to run again. Exit status 2 means some rows were sealed with a
+   key that is in neither variable: those secrets are lost and the subscriptions have to be created again.
+4. When it says everything readable is on the current key, empty `WEBHOOK_SEAL_KEY_PREVIOUS` in `.env` and run
+   `docker compose up -d` again.
 
 ## Checking a running system
 
@@ -143,6 +162,12 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   by `GET /v1/admin/reports/commission` (200) and `PATCH /v1/admin/rate-plans/{id}` (404 for an unknown plan,
   401 without a token); a second run with the same email fails on the unique key, and a password under 12
   characters is refused before anything is written.
+- The seal key rotation above, as written, on the Compose stack built from this checkout: a webhook secret created
+  through the API is a Fernet token that only the first key reads; after the keys are swapped (the first one in
+  `WEBHOOK_SEAL_KEY_PREVIOUS`) and `docker compose up -d`, `rotate_seal_key` reports one row re-sealed (exit 0) and
+  only the new key reads the token; a second run reports it already on the current key and leaves the token as it
+  is; with `WEBHOOK_SEAL_KEY_PREVIOUS` emptied the stack is healthy (`/readyz` 200) and the script still exits 0;
+  a secret sealed by a key that is in neither variable is reported as unsealable, exit 2.
 
 ## Not verified
 
