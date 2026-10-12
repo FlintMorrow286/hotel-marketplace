@@ -10,7 +10,7 @@ Copy the example environment file, then set the required values. Generate a dist
     openssl rand -hex 32
     uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
-Use a generated value of at least 32 characters for JWT_SECRET, the Fernet value for WEBHOOK_SEAL_KEY, and a separate random password for POSTGRES_PASSWORD. Keep the default POSTGRES_USER and POSTGRES_DB unless there is a reason to change them. APP_ENV is fixed to production by Compose so startup configuration checks remain active.
+Use a generated value of at least 32 characters for JWT_SECRET, the Fernet value for WEBHOOK_SEAL_KEY, and a separate random password for POSTGRES_PASSWORD. Compose puts that password into DATABASE_URL as it is, so use letters and digits (`openssl rand -hex 32` is fine): a `/`, `#`, `?` or `@` makes the URL unreadable (with a `/` or `#`, `app` and `jobs` restart with `ValueError: invalid literal for int()` although the database itself accepted the password), and a `%` followed by two hex digits is decoded into another character. Keep the default POSTGRES_USER and POSTGRES_DB unless there is a reason to change them. APP_ENV is fixed to production by Compose so startup configuration checks remain active. The copied `.env.example` sets `LOG_LEVEL=debug`, which is for development: set `LOG_LEVEL=info`.
 
 Then run:
 
@@ -67,7 +67,7 @@ Staff sign in at `/admin/login`. Running it again with the same email fails on t
 | --- | --- | --- |
 | POSTGRES_USER | hotel_user | PostgreSQL role created by the database image. |
 | POSTGRES_DB | hotel_mp | Database created by the database image. |
-| POSTGRES_PASSWORD | Required | Database credential; use a generated value. |
+| POSTGRES_PASSWORD | Required | Database credential, letters and digits only (`openssl rand -hex 32`): Compose puts it into `DATABASE_URL` unencoded. |
 | JWT_SECRET | Required | Application signing key; use a unique random value of at least 32 characters. |
 | WEBHOOK_SEAL_KEY | Required | Fernet key used to seal partner webhook secrets. Generate with the command above. |
 | WEBHOOK_SEAL_KEY_PREVIOUS | Empty | Optional old Fernet key during a key rotation (see "Rotating WEBHOOK_SEAL_KEY"). |
@@ -76,7 +76,7 @@ Staff sign in at `/admin/login`. Running it again with the same email fails on t
 | WEB_PORT | 8000 | Host port published by the API service. |
 | WEB_CONCURRENCY | 2 | Uvicorn workers per API container. The jobs service always uses one. |
 | FORWARDED_ALLOW_IPS | 127.0.0.1 | Uvicorn peers allowed to supply forwarded client addresses. |
-| LOG_LEVEL | info | Application log level. |
+| LOG_LEVEL | info | Application log level. `.env.example` sets `debug` for development; set `info` in a deployment. |
 | API_DOCS | unset | Unset means off in production. `true` serves Swagger UI (`/docs`), ReDoc and `/openapi.json`, which list every endpoint and load their scripts from a CDN. |
 | LOGIN_LIMIT_PER_MIN, REGISTER_LIMIT_PER_MIN, LOOKUP_LIMIT_PER_MIN, HOLD_LIMIT_PER_MIN, AVAILABILITY_LIMIT_PER_MIN, SEARCH_LIMIT_PER_MIN, PHOTO_UPLOAD_LIMIT_PER_MIN, ICAL_SYNC_LIMIT_PER_MIN | 10, 5, 10, 20, 120, 240, 20, 6 | Requests per client address per minute. While Redis is down each Uvicorn worker counts for itself, so the ceiling becomes the limit times `WEB_CONCURRENCY`. |
 | HOLD_TTL_MIN | 15 | Minutes a hold keeps the inventory. `app` and `jobs` get the same value from here. |
@@ -94,6 +94,33 @@ The app service sets RUN_BACKGROUND_JOBS=false and may use multiple Uvicorn work
 Every process opens its own pool of 5 to 25 connections (`app/db/pool.py`): each web worker and the jobs process. The default stack (2 workers and jobs) can therefore hold up to 75 of PostgreSQL's default 100 `max_connections` (3 of them reserved for superusers). Raise `max_connections` before raising WEB_CONCURRENCY or adding `app` replicas: at 4 workers (5 processes) a busy instance can ask for 125 and fail with `too many clients`. Connect to PostgreSQL directly or through a pooler in session mode: migrations, the hold queue and the payment and refund lock take session-level advisory locks, which transaction pooling does not keep on one connection. To scale API containers behind a reverse proxy, remove the direct host port publication and route traffic to the app service over a private Compose network.
 
 Rate limits use the client address reported by Uvicorn. The image enables --proxy-headers but trusts X-Forwarded-For only from FORWARDED_ALLOW_IPS. Leave the safe default when connecting directly. If a reverse proxy is used, set this variable to only that proxy's fixed address or its isolated network range, and prevent untrusted clients from reaching the API directly. Do not set it to *: any peer could forge a client address and bypass per-address limits.
+
+## Proxy on the same host
+
+A reverse proxy on the Docker host does not reach the container from 127.0.0.1. The container sees it, like any other
+connection made from the host, as coming from the Compose network's gateway (for example `172.19.0.1`). With the
+default `FORWARDED_ALLOW_IPS=127.0.0.1` Uvicorn therefore ignores `X-Forwarded-For`, and every user falls into one
+bucket per limit and gets 429 together. Find the gateway and put it into `.env`:
+
+```sh
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "$(docker compose ps -q app)"
+```
+
+Docker chooses the subnet when it creates the project's network, and `docker compose down` removes that network, so a
+later `up` may choose another. To keep the address fixed, give the network its own subnet in
+`docker-compose.override.yml`, which Compose reads next to `docker-compose.yml` without a flag:
+
+```yaml
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
+```
+
+and set `FORWARDED_ALLOW_IPS=172.30.0.1`. Trust only that address, and keep untrusted clients away from the published
+port, as above.
 
 ## Persistent data and backups
 
@@ -187,10 +214,24 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   tunables is set in the containers and the default limit of 10 applies. `PAYMENT_MODE=tinkoff`,
   `PAYMENT_MODE=fail` and `ALLOW_PRIVATE_TARGETS=true` each stop `app` and `jobs` at boot with a `ConfigError`
   that names the setting.
+- Behind a proxy on the Docker host, simulated by requests from the host to the published port with a hand-set
+  `X-Forwarded-For`: with the default `FORWARDED_ALLOW_IPS` five logins gave `401 401 401 429 429` and one Redis key,
+  `rl:login:172.19.0.1`, the Compose network's gateway; with that gateway, and with the network's subnet in CIDR form
+  (`172.19.0.0/16`), in `FORWARDED_ALLOW_IPS` they gave five `401` on five keys (`rl:login:203.0.113.1` to `.5`). The
+  commands of "Proxy on the same host" were run as written: the gateway is printed correctly, and with the fixed
+  subnet from `docker-compose.override.yml` the network is `172.30.0.0/24`, gateway `172.30.0.1`, before and after
+  `docker compose down` and `up`.
+- `POSTGRES_PASSWORD` and the `DATABASE_URL` that Compose builds from it. With `ab/cd` `app` and `jobs` restart with
+  `ValueError: invalid literal for int() with base 10: 'ab'` while the database accepted the password; `ab+cd=ef` and a
+  64-character hex password come up healthy. asyncpg's own DSN parser, run on the URL for other passwords: `+`, `=`
+  and `:` are read back as typed; `#` gives the same `ValueError` as `/`, `?` gives `bad query field`, `@` makes the
+  host `cd@db` and the password `ab`, and `%41` becomes `A`. 48% of 10,000 samples of `openssl rand -base64 32`
+  contained a `/`.
 
 ## Not verified
 
-- A reverse proxy in front: trusted-proxy handling through a real hop, TLS termination, HSTS over real HTTPS.
+- A real reverse proxy in front (nginx, Caddy, Traefik): trusted-proxy handling through a real hop, TLS termination,
+  HSTS over real HTTPS. Only requests made from the host were exercised (above).
 - Several `app` replicas, or `WEB_CONCURRENCY` above 2, under load. `scripts/load_holds.py` refuses a production
   environment, so the hold queue was measured outside the production container.
 - Restoring a backup on another host.
