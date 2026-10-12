@@ -190,7 +190,8 @@ async def create_hold(
     # ---- unit type + price
     ut = await conn.fetchrow(
         """
-        SELECT ut.id::text, ut.property_id::text, ut.base_price, ut.total_units, p.timezone
+        SELECT ut.id::text, ut.property_id::text, ut.base_price, ut.total_units, p.timezone,
+               p.status AS property_status
         FROM unit_type ut
         JOIN property p ON p.id = ut.property_id
         WHERE ut.id = $1
@@ -205,6 +206,10 @@ async def create_hold(
     # which can be a stay already under way, so only the web path is held to it.
     if origin == "web" and checkin < today_at(ut["timezone"]):
         raise NotAvailable("check-in date is in the past")
+    # Staff blocked this property: the catalog no longer shows it, but its unit type ids are
+    # still known to guests with an old link, and the block has to stop the money too.
+    if origin == "web" and ut["property_status"] == "blocked":
+        raise NotAvailable("property is not available for booking")
 
     # ---- lock inventory rows, ordered by (unit_type_id, date)
     locked = await _load_or_lock_inventory(conn, unit_type_id, checkin, checkout)
