@@ -13,7 +13,13 @@ import asyncpg
 
 from app.modules.auth.jwt import create_access_token
 from app.utils.logger import get_logger
-from app.utils.secrets import dummy_secret_hash, hash_secret, needs_rehash, verify_secret
+from app.utils.secrets import (
+    dummy_secret_hash,
+    hash_secret,
+    needs_rehash,
+    run_hashing,
+    verify_secret,
+)
 
 log = get_logger(__name__)
 
@@ -28,16 +34,16 @@ async def login_admin(conn: asyncpg.Connection, email: str, password: str) -> st
     """
     row = await conn.fetchrow("SELECT id::text, password_hash FROM admin WHERE email = $1", email)
     if row is None:
-        verify_secret(password, dummy_secret_hash())
+        await run_hashing(verify_secret, password, dummy_secret_hash())
         raise ValueError("invalid credentials")
-    if not verify_secret(password, row["password_hash"]):
+    if not await run_hashing(verify_secret, password, row["password_hash"]):
         raise ValueError("invalid credentials")
 
     if needs_rehash(row["password_hash"]):
         await conn.execute(
             "UPDATE admin SET password_hash = $2 WHERE id = $1",
             row["id"],
-            hash_secret(password),
+            await run_hashing(hash_secret, password),
         )
         log.info("password-rehashed", scope="admin")
 

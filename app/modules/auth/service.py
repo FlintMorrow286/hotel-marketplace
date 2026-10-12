@@ -14,13 +14,20 @@ import asyncpg
 from app.modules.auth.jwt import create_access_token
 from app.modules.auth.schemas import LoginRequest, PartnerRegisterRequest
 from app.utils.logger import get_logger
-from app.utils.secrets import dummy_secret_hash, hash_secret, needs_rehash, verify_secret
+from app.utils.secrets import (
+    dummy_secret_hash,
+    hash_secret,
+    needs_rehash,
+    run_hashing,
+    verify_secret,
+)
 
 log = get_logger(__name__)
 
 
 async def register_partner(conn: asyncpg.Connection, data: PartnerRegisterRequest) -> str:
     """Create a partner row, return new partner id (uuid string)."""
+    password_hash = await run_hashing(hash_secret, data.password)
     try:
         row = await conn.fetchrow(
             """
@@ -29,7 +36,7 @@ async def register_partner(conn: asyncpg.Connection, data: PartnerRegisterReques
             RETURNING id::text
             """,
             data.email,
-            hash_secret(data.password),
+            password_hash,
             data.name,
         )
         return row["id"]
@@ -48,16 +55,16 @@ async def login(conn: asyncpg.Connection, data: LoginRequest) -> str:
         "SELECT id::text, password_hash FROM partner WHERE email = $1", data.email
     )
     if row is None:
-        verify_secret(data.password, dummy_secret_hash())
+        await run_hashing(verify_secret, data.password, dummy_secret_hash())
         raise ValueError("invalid credentials")
-    if not verify_secret(data.password, row["password_hash"]):
+    if not await run_hashing(verify_secret, data.password, row["password_hash"]):
         raise ValueError("invalid credentials")
 
     if needs_rehash(row["password_hash"]):
         await conn.execute(
             "UPDATE partner SET password_hash = $2 WHERE id = $1",
             row["id"],
-            hash_secret(data.password),
+            await run_hashing(hash_secret, data.password),
         )
         log.info("password-rehashed", scope="partner")
 

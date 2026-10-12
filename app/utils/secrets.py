@@ -17,10 +17,13 @@ then replaced in place.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import os
+import weakref
+from collections.abc import Callable
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError, VerifyMismatchError
@@ -46,6 +49,28 @@ _hasher = PasswordHasher(
     salt_len=16,
 )
 _DUMMY_PASSWORD_HASH = _hasher.hash(base64.urlsafe_b64encode(os.urandom(32)).decode("ascii"))
+
+
+# One argon2 run holds 64 MiB. Several at once are fine, a flood of them is not.
+_MAX_CONCURRENT_HASHES = max(2, min(4, os.cpu_count() or 2))
+_slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+async def run_hashing[T](fn: Callable[..., T], /, *args: object) -> T:
+    """Run a hash or a verification off the event loop, a few at a time.
+
+    argon2 takes about 70 ms and 64 MiB a call. On the loop, a burst of failed logins
+    froze every other request for as long as the burst lasted (measured: /healthz at
+    0.7-1.6 s during 24 concurrent logins); in a thread, the loop keeps serving.
+    """
+    loop = asyncio.get_running_loop()
+    slots = _slots.get(loop)
+    if slots is None:
+        slots = _slots[loop] = asyncio.Semaphore(_MAX_CONCURRENT_HASHES)
+    async with slots:
+        return await asyncio.to_thread(fn, *args)
 
 
 def dummy_secret_hash() -> str:

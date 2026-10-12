@@ -16,7 +16,7 @@ import asyncpg
 
 from app.db.tx import lock_unit, serializable
 from app.utils.logger import get_logger
-from app.utils.secrets import hash_secret, needs_rehash, verify_secret
+from app.utils.secrets import hash_secret, needs_rehash, run_hashing, verify_secret
 
 log = get_logger(__name__)
 
@@ -62,10 +62,6 @@ def _iso(value) -> str:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-def _hash(raw_key: str) -> str:
-    return hash_secret(raw_key)
-
-
 def generate_key() -> str:
     """A new plaintext key. Only ever returned to the partner once."""
     return f"{KEY_PREFIX}{secrets.token_urlsafe(KEY_BYTES)}"
@@ -86,7 +82,7 @@ async def create_key(conn: asyncpg.Connection, partner_id: str, label: str) -> d
         """,
         partner_id,
         label,
-        _hash(raw),
+        await run_hashing(hash_secret, raw),
         raw[:PREFIX_LEN],
     )
     assert row is not None
@@ -139,7 +135,11 @@ async def resolve_key(conn: asyncpg.Connection, raw_key: str) -> dict:
         """,
         raw_key[:PREFIX_LEN],
     )
-    row = next((r for r in rows if verify_secret(raw_key, r["key_hash"])), None)
+    row = None
+    for candidate in rows:
+        if await run_hashing(verify_secret, raw_key, candidate["key_hash"]):
+            row = candidate
+            break
     if row is None or not row["enabled"]:
         raise KeyRejected("api key not found")
     if row["status"] != "active":
@@ -149,7 +149,7 @@ async def resolve_key(conn: asyncpg.Connection, raw_key: str) -> dict:
         await conn.execute(
             "UPDATE api_key SET key_hash = $2 WHERE id = $1",
             row["id"],
-            hash_secret(raw_key),
+            await run_hashing(hash_secret, raw_key),
         )
         log.info("api-key-rehashed", key_id=row["id"])
 
