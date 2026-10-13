@@ -146,6 +146,10 @@ jobs:
       WEBHOOK_SEAL_KEY: ${{ secrets.WEBHOOK_SEAL_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }}
       APP_ENV: local
       APP_PORT: 8123
+      # The payment page sends the guest back to APP_BASE_URL: it has to be the origin Playwright
+      # uses, or the booking token kept in the tab would not be there on the way back.
+      APP_BASE_URL: http://127.0.0.1:8123
+      PAYMENT_MODE: mock_acquiring
       LOOKUP_LIMIT_PER_MIN: 1000
       LOGIN_LIMIT_PER_MIN: 1000
       REGISTER_LIMIT_PER_MIN: 1000

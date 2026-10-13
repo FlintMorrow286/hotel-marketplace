@@ -7,6 +7,7 @@ import {
   getBooking,
   seedBookableProperty,
   createHoldThroughUi,
+  payThroughUi,
 } from "./fixtures/api";
 
 test("guest can book, pay, look up, and cancel a stay", async ({ browser, page, request }, testInfo) => {
@@ -23,7 +24,7 @@ test("guest can book, pay, look up, and cancel a stay", async ({ browser, page, 
     }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: /Оплатить/ }).click();
+  await payThroughUi(page);
   await expect(page).toHaveURL(new RegExp(`/booking/${bookingId}/success$`));
   await expect(page.getByRole("heading", { name: "Бронь подтверждена" })).toBeVisible();
   await expect(page.getByText(booking.code, { exact: true })).toBeVisible();
@@ -89,7 +90,7 @@ test("guest who just paid can find the booking and cancel it in the same tab", a
     await new Promise((resolve) => setTimeout(resolve, 3000));
     await route.continue();
   });
-  await page.getByRole("button", { name: /Оплатить/ }).click();
+  await payThroughUi(page);
   await expect(page).toHaveURL(new RegExp(`/booking/${bookingId}/success$`));
   await expect(page.getByRole("button", { name: "Отменить бронь" })).toBeVisible({
     timeout: 1500,

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, Clock } from "lucide-react";
@@ -9,6 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { CancelBooking } from "@/components/CancelBooking";
 import { useCountdown, formatCountdown } from "@/hooks/useCountdown";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { usePaymentConfig } from "@/hooks/usePaymentConfig";
 
 export function CheckoutPage() {
   useDocumentTitle("Оплата брони");
@@ -24,9 +26,29 @@ export function CheckoutPage() {
     refetchInterval: 30_000,
   });
 
+  const paymentConfig = usePaymentConfig();
+  // The browser is on its way to the payment page: the button stays down until it leaves.
+  const [redirecting, setRedirecting] = useState(false);
+
+  // Back from the payment page the browser may restore this page as it was, button and all.
+  useEffect(() => {
+    const onShow = (event: PageTransitionEvent) => {
+      if (event.persisted) setRedirecting(false);
+    };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
+
   const pay = useMutation({
     mutationFn: () => bookings.pay(bookingId as string),
     onSuccess: (data) => {
+      // An acquirer takes the payment on its own page; the booking is confirmed
+      // there and the return page finds that out.
+      if (data.status === "pending") {
+        setRedirecting(true);
+        window.location.assign(data.payment_url);
+        return;
+      }
       // The success page reads the same query: give it the confirmed booking, not the hold.
       rememberBooking(data);
       if (data.status === "confirmed") navigate(`/booking/${data.id}/success`);
@@ -141,8 +163,8 @@ export function CheckoutPage() {
         <div className="mt-8">
           <Button
             onClick={() => pay.mutate()}
-            disabled={!isHold || lapsed || pay.isPending}
-            loading={pay.isPending}
+            disabled={!isHold || lapsed || pay.isPending || redirecting}
+            loading={pay.isPending || redirecting}
             className="w-full"
             size="lg"
           >
@@ -160,9 +182,11 @@ export function CheckoutPage() {
           <p className="mt-4 text-center text-xs leading-relaxed text-text-tertiary">
             100% предоплата. Отмена бесплатна за сутки до заезда.
           </p>
-          <p className="mt-2 text-center text-xs text-text-tertiary">
-            Тестовая оплата, деньги не списываются.
-          </p>
+          {paymentConfig.data?.test_mode ? (
+            <p className="mt-2 text-center text-xs text-text-tertiary">
+              Тестовая оплата, деньги не списываются.
+            </p>
+          ) : null}
         </div>
       </section>
 

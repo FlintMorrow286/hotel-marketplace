@@ -256,12 +256,15 @@ CREATE TABLE booking_line (
 CREATE TABLE payment (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   booking_id      uuid NOT NULL REFERENCES booking(id),
-  provider        text NOT NULL DEFAULT 'stub' CHECK (provider IN ('stub','tinkoff','yookassa')),
-  external_id     text,
+  provider        text NOT NULL DEFAULT 'stub' CHECK (provider IN ('stub','fail','tinkoff','yookassa','mock_acquiring')),
+  external_id     text,                            -- id платежа у провайдера
   amount          numeric(12,2) NOT NULL,
   status          text NOT NULL CHECK (status IN ('pending','succeeded','failed','refunded')),
+  payment_url     text,                            -- страница оплаты у провайдера; у строки pending, открывшей сессию
   created_at      timestamptz NOT NULL DEFAULT now()
 );
+-- Строка — событие, её не обновляют: pending (сессия открыта) → succeeded | failed (сессия закрыта) → refunded.
+-- mock_acquirer_payment (миграция 0027) — память имитации эквайринга; без внешних ключей, при другом режиме пуста.
 
 CREATE TABLE commission_rule (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -412,9 +415,44 @@ POST /bookings/hold (idempotency-key: <uuid> от клиента)
 - **Токен брони.** `pay`, `cancel`, `refund` требуют `X-Booking-Token` (см. §7.1).
 - **Событие outbox пишется под savepoint** (`outbox.emit`): ошибка записи события (FK, переполнение, любая серверная) теряет событие, но не транзакцию вызывающего; конфликт сериализации внутри транзакции пробрасывается наверх, чтобы сработал повтор `serializable`. Раньше проглоченная ошибка отравляла транзакцию: следующий запрос падал с `InFailedSQLTransactionError`, а `COMMIT` молча становился `ROLLBACK`.
 
-Что должно будить человека (строки лога): `charge-not-returned`, `payment-unrecorded` (в том числе со `status=refunded`: провайдер вернул деньги, а запись о возврате не сохранилась), `hold-not-released-after-return`, `outbox-emit-failed` уровня error (потеряно событие брони: каналы не узнали о ней, нужна сверка), `confirmation-failed-after-charge` (информационно: за ним должна идти `charge-returned`), `conflict-answered-503` (если часто — пересмотреть очередь и пул), `payment-stub-outside-dev` (заглушка в боевом окружении).
+Что должно будить человека (строки лога): `charge-not-returned`, `payment-unrecorded` (в том числе со `status=refunded`: провайдер вернул деньги, а запись о возврате не сохранилась), `hold-not-released-after-return`, `outbox-emit-failed` уровня error (потеряно событие брони: каналы не узнали о ней, нужна сверка), `confirmation-failed-after-charge` (информационно: за ним должна идти `charge-returned`), `conflict-answered-503` (если часто — пересмотреть очередь и пул), `payment-stub-outside-dev` (заглушка или мок-эквайринг в боевом окружении), `payment-reconcile-failed` и `payment-unknown-to-provider` (сверка не смогла спросить провайдера или он не знает платёж, который мы записали).
 
-Оставшийся пробел — исход «неизвестен»: провайдер списал, но вызов закончился исключением. Закрывается журналом попыток с durable-ключами и сверкой с провайдером; это работа вместе с реальным эквайрингом.
+Оставшийся пробел — исход «неизвестен» у мгновенного провайдера: он списал, но вызов `pay()` закончился исключением. Для оплаты на странице провайдера он закрыт (§4.9): сессия записывается до ухода гостя, а сверка опрашивает открытые. Мгновенный `pay()` остаётся у заглушки, которая ничего не списывает.
+
+### 4.9 Оплата на странице провайдера (эквайринг)
+
+Код — `app/modules/payment/service.py` (раздел «payment on the provider's page»), интерфейс — `HostedPaymentProvider` (`provider.py`). Пока ключей нет, провайдер — `mock_acquiring` (`mock_acquirer.py`): он проходит те же шаги, что Тинькофф или ЮKassa, поэтому ядро работает так, как будет работать с настоящим эквайрером.
+
+```mermaid
+sequenceDiagram
+  participant G as Гость (браузер)
+  participant S as API
+  participant B as Провайдер
+  G->>S: POST /bookings/{id}/pay
+  S->>B: create_session(booking, amount, return_url)
+  B-->>S: payment_id, payment_url
+  Note over S: payment(pending, external_id, payment_url)
+  S-->>G: 202 {payment_url}
+  G->>B: платит на странице провайдера
+  B->>S: POST /payments/notifications/{provider} (подпись)
+  S->>B: fetch(payment_id): статус берём у провайдера
+  Note over S: payment(succeeded), hold → sold, confirmed (под lock'ом брони)
+  B-->>G: редирект на /checkout/{id}/return
+  G->>S: POST /bookings/{id}/payment/sync
+  S-->>G: confirmed → /booking/{id}/success
+```
+
+- **Сессия.** `POST /pay` вызывает провайдера вне транзакции и пишет `payment(pending)` с `external_id` и `payment_url`. Пока сессия открыта, повторный `pay` возвращает тот же адрес, а не вторую оплату (спросив провайдера, не закрыта ли она). Новая сессия — только после `failed`. Ответ — 202; если открытый платёж оказался оплаченным, приходит подтверждённая бронь.
+- **Статус берётся у провайдера, а не из уведомления.** `read_notification` проверяет подпись и называет платёж; действует ядро по ответу `fetch`. Поддельное, преждевременное или повторное уведомление ничего не подтверждает. Уведомление о неизвестном платеже получает 200 (иначе провайдер повторяет его вечно), занятая бронь — 503 (повторит).
+- **Три пути к одному результату:** уведомление, возврат гостя (`POST /bookings/{id}/payment/sync`) и сверка (`reconcile_pending`, джоб раз в 30 с: открытые сессии старше 60 с и моложе 3 суток, а также списания, у которых бронь не подтверждена и не возвращена). Все идут через `_settle_session` под тем же advisory-lock брони, что и `pay_and_confirm`: бронь подтверждается один раз, как бы ни пришла новость; закрытая сессия у провайдера не переспрашивается.
+- **Деньги, которые не купили проживание, возвращаются.** Бронь снята (гость отменил, reaper), пока он платил; конфликт сериализации; сумма у провайдера не равна цене. Сначала пишется `succeeded`, затем возврат по id платежа (`refund_charge`), затем `refunded`; возврат делается один раз. Не вернулось — состояние `stuck`, лог `charge-not-returned`, сверка пробует снова. Hold, который истёк, но ещё не снят reaper'ом, платёж принимает: ночи за ним, а при гонке с reaper'ом деньги вернутся.
+- **Брони каналов** (`origin='channel'`) эквайринг не видят: деньги собрала OTA, поэтому они подтверждаются мгновенно, как под заглушкой (`_provider_for`), а страницу оплаты для них не открыть (`start_payment` отказывает).
+- **Возврат идёт через того, кто взял деньги.** `refund_booking` берёт провайдера из последней строки `succeeded` (`_provider_of_charge`), а не из текущего `PAYMENT_MODE`: смена режима (заглушка → мок → настоящий) не оставляет прежние брони без возврата. Сумму возврата ядро записывает по ответу провайдера (`PaymentResult.amount`): возврат, который провайдер уже сделал до обрыва, при повторе отвечает первой суммой, и бухгалтерия повторяет её, а не пересчитывает по сегодняшнему правилу отмены. Открытые сессии прежнего провайдера не сверяются: режим меняют, когда открытых платежей нет.
+- **Возврат гостя.** Провайдер отправляет гостя на `{APP_BASE_URL}/checkout/{id}/return` (должен быть адресом, на котором гость открыл сайт: токен брони лежит в `sessionStorage` вкладки). Страница опрашивает `payment/sync` и следит за бронью; параметры, которые добавил провайдер, не читаются.
+
+Мок отдаёт страницу оплаты сам (`/mock-acquirer/pay/{id}`, только при `PAYMENT_MODE=mock_acquiring`) и подписывает уведомления ключом, выведенным из `JWT_SECRET`. На ней три исхода: оплатить; «банк отклонил»; «платёж прошёл, но магазин не получит уведомление» (ядро должно найти его само: `sync` или сверка). Банк-имитация не повторяет отказавшее уведомление, как повторил бы настоящий.
+
+**Как подключить настоящего провайдера, когда будут ключи:** реализовать `HostedPaymentProvider` — `create_session` (Tinkoff `Init`, YooKassa `POST /payments`), `fetch` (`GetState`, `GET /payments/{id}`), `read_notification` (проверка `Token` / списка адресов и разбор тела), `refund_charge` (`Cancel`, `POST /refunds`; идемпотентно по `charge_id`); добавить имя в `PaymentMode`, `payment_provider_check`, `IMPLEMENTED_PAYMENT_MODES` и `get_payment_provider`; ключи — в `Settings` и `.env.example`. Адрес для уведомлений провайдеру: `{APP_BASE_URL}/v1/payments/notifications/{имя_провайдера}`. Не входит: фискальный чек 54-ФЗ — его состав зависит от юридической схемы (`docs/LEGAL.md`).
 
 ---
 
@@ -488,7 +526,10 @@ POST /bookings/hold (idempotency-key: <uuid> от клиента)
 | POST | `/bookings/hold` | guest | Body: `unit_type_id, checkin, checkout, guest{...}, consent{docs_version, offer, personal_data}`; Header: `Idempotency-Key` → `booking` status=hold + `hold_expires_at` + `access_token`. Без обоих согласий — 422, с неактуальной `docs_version` — 409 |
 | POST | `/bookings/lookup` | guest | `{code, email}` → бронь + `access_token`; код без email ничего не отдаёт |
 | POST | `/bookings/{id}/confirm` | guest | Подтверждение (manual flow: «оплатить позже»/счёт) или триггер эквайринга |
-| POST | `/bookings/{id}/pay` | guest + `X-Booking-Token` | **Phase 1 — заглушка**: `PAYMENT_MODE=stub` мгновенно `succeeded` → `confirmed`. Потом — старт платёжной сессии эквайринга |
+| POST | `/bookings/{id}/pay` | guest + `X-Booking-Token` | Заглушка (`PAYMENT_MODE=stub`): мгновенно `succeeded` → `confirmed`, ответ — бронь. Эквайринг (`mock_acquiring`, потом настоящий): открывает сессию, ответ 202 `{status: pending, payment_id, payment_url}`; повтор при открытой сессии — тот же адрес (§4.9) |
+| POST | `/bookings/{id}/payment/sync` | guest + `X-Booking-Token` | Спрашивает провайдера и приводит бронь в соответствие. `{state: confirmed \| pending \| failed \| returned \| stuck \| none, payment_url, booking}`; зовёт страница возврата с оплаты |
+| POST | `/payments/notifications/{provider}` | public, подпись провайдера | Куда эквайринг сообщает о платеже (§4.9). 200 прочитано, 400 подпись неверна, 404 чужой провайдер, 503 бронь занята |
+| GET | `/payments/config` | public | `{test_mode}`: платят ли по-настоящему; чекаут пишет «тестовая оплата» только при `true` |
 | POST | `/bookings/{id}/cancel` | guest + `X-Booking-Token` | Отмена холда, возврат инвентаря |
 | POST | `/bookings/{id}/refund` | guest + `X-Booking-Token` | Возврат подтверждённой брони: бесплатно до 24:00 накануне заезда по календарю объекта, позже — со штрафом (`app/config/legal.py`) |
 | GET | `/bookings/{id}` | public | Статус и даты (без контактов гостя и платёжных данных) |
@@ -664,11 +705,12 @@ paths:
 | `stub` (**по умолчанию**) | `POST /bookings/{id}/pay` мгновенно создаёт `payment(status='succeeded')`, бронь → `confirmed`. Нужно для разработки ядра без эквайринга |
 | `delayed_stub` | оплата «срабатывает» через N секунд — для тестов hold-TTL и протухания |
 | `fail` | всегда `failed` — для тестов веток ошибок |
-| `tinkoff` (Phase 1.5+) | реальный эквайринг |
+| `mock_acquiring` | имитация эквайринга без ключей: сессия → страница оплаты → подписанное уведомление → возврат гостя (§4.9). Деньги не списываются |
+| `tinkoff` (Phase 1.5+) | реальный эквайринг (нет реализации: старт отказывает) |
 
-> Архитектурно: интерфейс `PaymentProvider.pay()` + `PaymentProvider.refund()`. Заглушка и реальный провайдер — две реализации. **Ядро бронирования не зависит от того, какая включена.**
+> Архитектурно: два вида провайдеров. `PaymentProvider` (`pay()` + `refund()`) отвечает сразу; `HostedPaymentProvider` — эквайринг: сессия, страница провайдера, уведомление, `fetch`, `refund_charge`. Заглушка, мок и реальный провайдер — реализации. **Ядро бронирования не зависит от того, какая включена.**
 
-`fail` и `delayed_stub` — только для тестов: при `APP_ENV` не `local`/`dev`/`test` приложение не стартует (`app/config/checks.py`); `stub` разрешён, но на каждом старте пишет предупреждение `payment-stub-outside-dev`. Контракт провайдера (идемпотентность `pay` и `refund` по `booking_id`) описан в `app/modules/payment/provider.py`.
+`fail` и `delayed_stub` — только для тестов: при `APP_ENV` не `local`/`dev`/`test` приложение не стартует (`app/config/checks.py`); `stub` и `mock_acquiring` разрешены, но на каждом старте пишут предупреждение `payment-stub-outside-dev` (бронь подтверждается без списания). Контракт провайдера (идемпотентность `pay` и `refund` по `booking_id`) описан в `app/modules/payment/provider.py`.
 
 ---
 

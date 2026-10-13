@@ -116,6 +116,12 @@ def test_test_only_payment_modes_are_refused_in_production(mode: str) -> None:
     check_config(_settings(app_env="test", payment_mode=mode))
 
 
+def test_the_mock_acquirer_is_a_payment_mode_in_every_environment() -> None:
+    """Until there are keys, a deployment may run on the mock acquirer (and logs a warning)."""
+    check_config(_production(payment_mode="mock_acquiring"))
+    check_config(_settings(app_env="local", payment_mode="mock_acquiring"))
+
+
 @pytest.mark.parametrize("env", ["local", "production"])
 def test_an_unimplemented_payment_mode_is_refused_everywhere(env: str) -> None:
     with pytest.raises(ConfigError, match="PAYMENT_MODE"):

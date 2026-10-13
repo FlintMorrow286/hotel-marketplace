@@ -5,6 +5,7 @@ import {
   createHoldThroughApi,
   createHoldThroughUi,
   getBooking,
+  payThroughUi,
   seedBookableProperty,
 } from "./fixtures/api";
 
@@ -50,7 +51,7 @@ test("a fresh tab must find a hold by code and email before paying", async ({
     await expect(freshPage.getByRole("heading", { name: "Ожидает оплаты" })).toBeVisible();
     await freshPage.getByRole("button", { name: "Перейти к оплате" }).click();
     await expect(freshPage).toHaveURL(new RegExp(`/checkout/${bookingId}$`));
-    await freshPage.getByRole("button", { name: /Оплатить/ }).click();
+    await payThroughUi(freshPage);
     await expect(
       freshPage.getByRole("heading", { name: "Бронь подтверждена" }),
     ).toBeVisible();

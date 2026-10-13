@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiException, bookings, legal } from "./client";
+import { ApiException, bookings, legal, payments } from "./client";
 
 class MemoryStorage {
   private data = new Map<string, string>();
@@ -87,6 +87,38 @@ describe("the booking access token", () => {
     });
   });
 
+  it("passes on the address of the provider's page when the payment is taken there", async () => {
+    session.setItem("booking-token:b1", "tok-1");
+    const redirect = {
+      status: "pending",
+      payment_id: "mock_1",
+      payment_url: "https://bank.example/pay/mock_1",
+    };
+    fetchMock.mockResolvedValueOnce(reply(redirect, 202));
+
+    const answer = await bookings.pay("b1");
+
+    expect(answer).toEqual(redirect);
+  });
+
+  it("reads where the payment stands from the sync answer", async () => {
+    session.setItem("booking-token:b1", "tok-1");
+    const answer = { state: "failed", payment_url: null, booking: null };
+    fetchMock.mockResolvedValueOnce(reply(answer));
+
+    await expect(bookings.syncPayment("b1")).resolves.toEqual(answer);
+  });
+
+  it("asks whether the payment is a test one without a token", async () => {
+    fetchMock.mockResolvedValueOnce(reply({ test_mode: true }));
+
+    await expect(payments.config()).resolves.toEqual({ test_mode: true });
+
+    const { url, headers } = lastRequest();
+    expect(url).toBe("/v1/payments/config");
+    expect(headers?.["X-Booking-Token"]).toBeUndefined();
+  });
+
   it("reads the current documents version from /v1/legal", async () => {
     fetchMock.mockResolvedValueOnce(reply({ docs_version: "2026.09-draft" }));
 
@@ -107,6 +139,7 @@ describe("the booking access token", () => {
     ["pay", "/v1/bookings/b1/pay"],
     ["cancel", "/v1/bookings/b1/cancel"],
     ["refund", "/v1/bookings/b1/refund"],
+    ["syncPayment", "/v1/bookings/b1/payment/sync"],
   ] as const)("is sent in a header, not the URL, by %s", async (action, path) => {
     session.setItem("booking-token:b1", "tok-1");
     fetchMock.mockResolvedValueOnce(reply(booking("b1")));
@@ -128,6 +161,7 @@ describe("the booking access token", () => {
     });
     await expect(bookings.cancel("b1")).rejects.toBeInstanceOf(ApiException);
     await expect(bookings.refund("b1")).rejects.toBeInstanceOf(ApiException);
+    await expect(bookings.syncPayment("b1")).rejects.toBeInstanceOf(ApiException);
 
     expect(fetchMock).not.toHaveBeenCalled();
   });

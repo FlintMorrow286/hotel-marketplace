@@ -3,6 +3,7 @@ import { SearchPage } from "@/pages/SearchPage";
 import { PropertyPage } from "@/pages/PropertyPage";
 import { CheckoutPage } from "@/pages/CheckoutPage";
 import { BookingSuccessPage } from "@/pages/BookingSuccessPage";
+import { PaymentReturnPage } from "@/pages/PaymentReturnPage";
 import { MyBookingPage } from "@/pages/MyBookingPage";
 import { LegalPage } from "@/pages/LegalPage";
 import { LoginPage } from "@/pages/auth/LoginPage";
@@ -34,6 +35,8 @@ export const routes: RouteObject[] = [
       { path: "search", element: <SearchPage /> },
       { path: "property/:id", element: <PropertyPage /> },
       { path: "checkout/:bookingId", element: <CheckoutPage /> },
+      // Where the payment page sends the guest back: asks the provider and moves on.
+      { path: "checkout/:bookingId/return", element: <PaymentReturnPage /> },
       { path: "booking/:bookingId/success", element: <BookingSuccessPage /> },
       { path: "login", element: <LoginPage /> },
       // Reachable from the login page; without this the link 404s.

@@ -12,14 +12,27 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import time
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 
 import asyncpg
 
 from app.config import legal
+from app.config.settings import settings
 from app.db.pool import get_pool
 from app.db.tx import serializable, try_lock, unlock
 from app.modules.booking.service import BookingError, release_hold
-from app.modules.payment.provider import PaymentProvider, PaymentResult, get_payment_provider
+from app.modules.payment.provider import (
+    HostedPaymentProvider,
+    NotificationError,
+    PaymentProvider,
+    PaymentResult,
+    StubProvider,
+    UnknownPayment,
+    get_payment_provider,
+    provider_named,
+)
 from app.utils.logger import get_logger
 from app.utils.tz import today_at as _today_at
 
@@ -47,6 +60,118 @@ async def _row_to_out(row: asyncpg.Record, lines: list[asyncpg.Record]) -> dict:
     }
 
 
+def _provider_for(origin: str) -> PaymentProvider:
+    """The provider that settles a booking of this origin.
+
+    A channel booking was paid on the OTA's side: there is no guest to send to a payment page
+    and nothing of ours to charge, so an acquirer never sees it. It is settled instantly, as
+    under the stub, whatever PAYMENT_MODE says about the web checkout.
+    """
+    provider = get_payment_provider()
+    if origin == "channel" and isinstance(provider, HostedPaymentProvider):
+        return StubProvider()
+    return provider
+
+
+async def _confirm_hold(
+    conn: asyncpg.Connection, booking: asyncpg.Record
+) -> tuple[dict, asyncpg.Record]:
+    """Hold -> sold, booking -> confirmed, outbox event: one transaction body, run by `serializable`.
+
+    Both ways of paying end here: the instant provider after its charge, and the acquirer after its
+    notification. `booking` is the row `pay_and_confirm` and the hosted flow both read first.
+    """
+    booking_id = booking["id"]
+    locked = await conn.fetch(
+        """
+        SELECT date, hold, sold FROM inventory_day
+        WHERE unit_type_id = $1 AND date >= $2 AND date < $3
+        ORDER BY date
+        FOR UPDATE
+        """,
+        booking["unit_type_id"],
+        booking["checkin_date"],
+        booking["checkout_date"],
+    )
+    for row in locked:
+        if row["hold"] < 1:
+            raise PaymentError(f"hold vanished on {row['date']}; the booking is inconsistent")
+
+    await conn.executemany(
+        """
+        UPDATE inventory_day
+        SET hold = GREATEST(hold - 1, 0), sold = sold + 1
+        WHERE unit_type_id = $1 AND date = $2
+        """,
+        [(booking["unit_type_id"], r["date"]) for r in locked],
+    )
+
+    row = await conn.fetchrow(
+        """
+        UPDATE booking
+        SET status = 'confirmed',
+            paid_at = now(),
+            hold_expires_at = NULL,
+            commission_status = 'accrued'
+        WHERE id = $1 AND status = 'hold'
+        RETURNING id::text, code, status, total_amount::float8,
+                  paid_at, checkin_date, checkout_date,
+                  commission_amt::float8, property_id::text
+        """,
+        booking_id,
+    )
+    if row is None:
+        raise PaymentError("booking changed state during payment")
+
+    lines = await conn.fetch(
+        "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",
+        booking_id,
+    )
+    # Tell the channels. Same transaction as the confirmation, so the
+    # outbox row can never exist without the booking it describes.
+    from app.modules.outbox import service as outbox_service
+
+    await outbox_service.emit(
+        conn,
+        aggregate="booking",
+        aggregate_id=booking_id,
+        event_type=outbox_service.BOOKING_CONFIRMED,
+        payload={
+            "booking_id": booking_id,
+            "code": row["code"],
+            "unit_type_id": booking["unit_type_id"],
+            "checkin_date": row["checkin_date"].isoformat(),
+            "checkout_date": row["checkout_date"].isoformat(),
+            "total_amount": float(row["total_amount"]),
+            "commission_amt": float(row["commission_amt"]),
+        },
+        property_id=row["property_id"],
+    )
+
+    return await _row_to_out(row, lines), row
+
+
+async def _notify_confirmed(conn: asyncpg.Connection, booking_id: str, row: asyncpg.Record) -> None:
+    """Tell the partner and the guest. After the commit: a confirmation that rolls back or
+    re-runs must not notify."""
+    from app.modules.notification import service as notification_service
+
+    try:
+        partner_id = await conn.fetchval(
+            "SELECT partner_id::text FROM property WHERE id = $1", row["property_id"]
+        )
+        guest = await conn.fetchrow(
+            "SELECT guest_name, guest_email FROM booking WHERE id = $1", booking_id
+        )
+        payload = dict(row)
+        payload["partner_id"] = partner_id
+        payload["guest_name"] = guest["guest_name"]
+        payload["guest_email"] = guest["guest_email"]
+        await notification_service.notify_booking_confirmed(conn, payload)
+    except Exception as exc:
+        log.warning("notify-failed", booking_id=booking_id, error=str(exc))
+
+
 async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = None) -> dict:
     """Charge the guest and confirm the booking.
 
@@ -55,7 +180,6 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
     status. A payment that succeeds while the booking was already cancelled is
     refused rather than double-confirming.
     """
-    provider = get_payment_provider()
     pool = None
     if conn is None:
         pool = get_pool()
@@ -72,7 +196,7 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
         booking = await conn.fetchrow(
             """
             SELECT id::text, code, status, total_amount::float8, checkin_date, checkout_date,
-                   unit_type_id::text, hold_expires_at
+                   unit_type_id::text, hold_expires_at, origin
             FROM booking WHERE id = $1
             """,
             booking_id,
@@ -87,6 +211,7 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
             raise PaymentError("hold expired; please book again")
 
         amount = booking["total_amount"]
+        provider = _provider_for(booking["origin"])
 
         # --- call the provider (stub in Phase 1)
         result: PaymentResult = await provider.pay(booking_id, amount)
@@ -99,75 +224,7 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
 
         # --- confirm transactionally (re-run if Postgres aborts it for a conflict)
         async def _confirm() -> tuple[dict, asyncpg.Record]:
-            locked = await conn.fetch(
-                """
-                SELECT date, hold, sold FROM inventory_day
-                WHERE unit_type_id = $1 AND date >= $2 AND date < $3
-                ORDER BY date
-                FOR UPDATE
-                """,
-                booking["unit_type_id"],
-                booking["checkin_date"],
-                booking["checkout_date"],
-            )
-            for row in locked:
-                if row["hold"] < 1:
-                    raise PaymentError(
-                        f"hold vanished on {row['date']}; the booking is inconsistent"
-                    )
-
-            await conn.executemany(
-                """
-                UPDATE inventory_day
-                SET hold = GREATEST(hold - 1, 0), sold = sold + 1
-                WHERE unit_type_id = $1 AND date = $2
-                """,
-                [(booking["unit_type_id"], r["date"]) for r in locked],
-            )
-
-            row = await conn.fetchrow(
-                """
-                UPDATE booking
-                SET status = 'confirmed',
-                    paid_at = now(),
-                    hold_expires_at = NULL,
-                    commission_status = 'accrued'
-                WHERE id = $1 AND status = 'hold'
-                RETURNING id::text, code, status, total_amount::float8,
-                          paid_at, checkin_date, checkout_date,
-                          commission_amt::float8, property_id::text
-                """,
-                booking_id,
-            )
-            if row is None:
-                raise PaymentError("booking changed state during payment")
-
-            lines = await conn.fetch(
-                "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",
-                booking_id,
-            )
-            # Tell the channels. Same transaction as the confirmation, so the
-            # outbox row can never exist without the booking it describes.
-            from app.modules.outbox import service as outbox_service
-
-            await outbox_service.emit(
-                conn,
-                aggregate="booking",
-                aggregate_id=booking_id,
-                event_type=outbox_service.BOOKING_CONFIRMED,
-                payload={
-                    "booking_id": booking_id,
-                    "code": row["code"],
-                    "unit_type_id": booking["unit_type_id"],
-                    "checkin_date": row["checkin_date"].isoformat(),
-                    "checkout_date": row["checkout_date"].isoformat(),
-                    "total_amount": float(row["total_amount"]),
-                    "commission_amt": float(row["commission_amt"]),
-                },
-                property_id=row["property_id"],
-            )
-
-            return await _row_to_out(row, lines), row
+            return await _confirm_hold(conn, booking)
 
         try:
             # The money has moved: write that down first, so a charge never exists
@@ -180,7 +237,7 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
             # The guest has paid but the booking is not confirmed: the hold was reaped
             # during the provider call, or the transaction kept conflicting.
             log.error("confirmation-failed-after-charge", booking_id=booking_id, error=repr(exc))
-            returned = await _give_back(conn, provider, booking_id, amount)
+            returned = await _give_back(conn, provider, booking_id, amount, result.external_id)
             if returned:
                 # A returned charge is final. Closing the hold means a retry starts from
                 # a new booking and a new charge, never from a provider that may answer
@@ -195,23 +252,7 @@ async def pay_and_confirm(booking_id: str, conn: asyncpg.Connection | None = Non
             raise PaymentError(f"{reason}; {tail}") from exc
         log.info("booking-confirmed", booking_id=booking_id, code=row["code"])
 
-        # After the commit: a confirmation that rolls back or re-runs must not notify.
-        from app.modules.notification import service as notification_service
-
-        try:
-            partner_id = await conn.fetchval(
-                "SELECT partner_id::text FROM property WHERE id = $1", row["property_id"]
-            )
-            guest = await conn.fetchrow(
-                "SELECT guest_name, guest_email FROM booking WHERE id = $1", booking_id
-            )
-            payload = dict(row)
-            payload["partner_id"] = partner_id
-            payload["guest_name"] = guest["guest_name"]
-            payload["guest_email"] = guest["guest_email"]
-            await notification_service.notify_booking_confirmed(conn, payload)
-        except Exception as exc:
-            log.warning("notify-failed", booking_id=booking_id, error=str(exc))
+        await _notify_confirmed(conn, booking_id, row)
 
         return out
     finally:
@@ -249,6 +290,47 @@ async def _refund_on_record(conn: asyncpg.Connection, booking_id: str) -> asyncp
     )
 
 
+async def _refund_via(
+    provider: PaymentProvider, booking_id: str, amount: float, charge_id: str | None
+) -> PaymentResult:
+    """Return money through the provider's own interface: an acquirer by the id of the charge."""
+    if isinstance(provider, HostedPaymentProvider):
+        return await provider.refund_charge(booking_id, amount, charge_id)
+    return await provider.refund(booking_id, amount)
+
+
+async def _provider_of_charge(
+    conn: asyncpg.Connection, booking_id: str, current: PaymentProvider
+) -> PaymentProvider:
+    """The provider that took the booking's money: it is the one to pay it back."""
+    name = await conn.fetchval(
+        """
+        SELECT provider FROM payment
+        WHERE booking_id = $1 AND status = 'succeeded'
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        booking_id,
+    )
+    if name is None or name == current.name:
+        return current
+    try:
+        return provider_named(name)
+    except ValueError as exc:
+        raise PaymentError(f"the payment was taken by {name}, which cannot refund it now") from exc
+
+
+async def _charge_on_record(conn: asyncpg.Connection, booking_id: str) -> str | None:
+    """The provider's id of the booking's last successful charge: what an acquirer refunds by."""
+    return await conn.fetchval(
+        """
+        SELECT external_id FROM payment
+        WHERE booking_id = $1 AND status = 'succeeded'
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        booking_id,
+    )
+
+
 async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None) -> dict:
     """Refund a confirmed booking: sold -> free, status -> refunded.
 
@@ -259,7 +341,6 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
     before the booking changes, so a call that died in between is finished by
     the next one instead of refunding again.
     """
-    provider = get_payment_provider()
     pool = None
     if conn is None:
         pool = get_pool()
@@ -274,7 +355,8 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
         booking = await conn.fetchrow(
             """
             SELECT b.id::text, b.code, b.status, b.total_amount::float8, b.checkin_date,
-                   b.checkout_date, b.unit_type_id::text, b.property_id::text, p.timezone
+                   b.checkout_date, b.unit_type_id::text, b.property_id::text, b.origin,
+                   p.timezone
             FROM booking b
             JOIN property p ON p.id = b.property_id
             WHERE b.id = $1
@@ -285,6 +367,7 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
             raise BookingNotFound("booking not found")
         if booking["status"] not in ("confirmed", "paid"):
             raise PaymentError(f"cannot refund booking with status={booking['status']}")
+        provider = await _provider_of_charge(conn, booking_id, _provider_for(booking["origin"]))
 
         deadline = booking["checkin_date"] - dt.timedelta(
             hours=legal.CANCELLATION_FREE_BEFORE_HOURS
@@ -307,9 +390,25 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
                 amount = booking["total_amount"]
             else:
                 amount = round(booking["total_amount"] * (1 - legal.CANCELLATION_PENALTY_RATE), 2)
-            result = await provider.refund(booking_id, amount)
+            charge_id = (
+                await _charge_on_record(conn, booking_id)
+                if isinstance(provider, HostedPaymentProvider)
+                else None
+            )
+            result = await _refund_via(provider, booking_id, amount, charge_id)
             if result.status != "refunded":
                 raise PaymentError("refund failed")
+            if result.amount is not None and round(result.amount, 2) != round(amount, 2):
+                # A refund the provider made before a crash, answered again: that is the money
+                # that went back, whatever today's cancellation rule would have returned.
+                log.warning(
+                    "refund-amount-differs",
+                    booking_id=booking_id,
+                    asked=amount,
+                    refunded=result.amount,
+                )
+                amount = round(result.amount, 2)
+                is_free = amount >= booking["total_amount"]
             await _record_payment_reliably(
                 conn, booking_id, provider.name, amount, "refunded", result.external_id
             )
@@ -405,7 +504,11 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
 
 
 async def _give_back(
-    conn: asyncpg.Connection, provider: PaymentProvider, booking_id: str, amount: float
+    conn: asyncpg.Connection,
+    provider: PaymentProvider,
+    booking_id: str,
+    amount: float,
+    charge_id: str | None = None,
 ) -> bool:
     """Return a charge whose booking could not be confirmed. Never raises.
 
@@ -413,7 +516,7 @@ async def _give_back(
     charge went through has no `refunded` one after it, which is how it is found.
     """
     try:
-        result = await provider.refund(booking_id, amount)
+        result = await _refund_via(provider, booking_id, amount, charge_id)
     except Exception as exc:
         log.error("charge-not-returned", booking_id=booking_id, amount=amount, error=str(exc))
         return False
@@ -477,6 +580,7 @@ async def _record_payment(
     amount: float,
     status: str,
     external_id: str | None,
+    payment_url: str | None = None,
 ) -> None:
     """Write one provider event down, once.
 
@@ -487,8 +591,8 @@ async def _record_payment(
     """
     await conn.execute(
         """
-        INSERT INTO payment (booking_id, provider, amount, status, external_id)
-        SELECT $1::uuid, $2::text, $3::numeric, $4::text, $5::text
+        INSERT INTO payment (booking_id, provider, amount, status, external_id, payment_url)
+        SELECT $1::uuid, $2::text, $3::numeric, $4::text, $5::text, $6::text
         WHERE $5::text IS NULL
            OR NOT EXISTS (
                 SELECT 1 FROM payment
@@ -499,7 +603,436 @@ async def _record_payment(
         amount,
         status,
         external_id,
+        payment_url,
     )
+
+
+# ---------------------------------------------------------------- payment on the provider's page
+#
+# An acquirer takes the payment on its own page, so paying is no longer one call. The core opens a
+# session (`start_payment`) and sends the guest away; the result comes back by the provider's
+# notification (`receive_notification`), by the guest's return (`sync_payment`), or by a sweep
+# for the ones that never arrived (`reconcile_pending`). All three end in `_settle_session`, which
+# asks the provider what happened and never trusts what it was told. It runs under the same
+# per-booking lock as `pay_and_confirm`, so however the news arrives the booking is confirmed
+# once, and a charge that cannot buy the stay is returned.
+
+
+class PaymentBusy(PaymentError):
+    """Another request is working on this booking's payment."""
+
+
+class NotificationRejected(Exception):
+    """A provider notification the core will not act on; carries the HTTP answer."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+# A payment younger than this is left to its notification; older ones are asked about.
+RECONCILE_MIN_AGE_SEC = 60.0
+# A session the provider cannot settle after this long is no longer chased.
+RECONCILE_MAX_AGE = dt.timedelta(days=3)
+
+
+@asynccontextmanager
+async def _connection(conn: asyncpg.Connection | None) -> AsyncIterator[asyncpg.Connection]:
+    if conn is not None:
+        yield conn
+        return
+    pool = get_pool()
+    acquired = await pool.acquire()
+    try:
+        yield acquired
+    finally:
+        await pool.release(acquired)
+
+
+@asynccontextmanager
+async def _pay_lock(
+    conn: asyncpg.Connection, booking_id: str, wait_sec: float = 0.0
+) -> AsyncIterator[None]:
+    """The per-booking payment lock, waiting up to `wait_sec` for it."""
+    deadline = time.monotonic() + wait_sec
+    while not await try_lock(conn, "pay", booking_id):
+        if time.monotonic() >= deadline:
+            raise PaymentBusy("a payment for this booking is already in progress")
+        await asyncio.sleep(0.05)
+    try:
+        yield
+    finally:
+        await unlock(conn, "pay", booking_id)
+
+
+def pays_on_provider_page() -> bool:
+    """True when the guest pays on the provider's own page rather than in one call."""
+    return isinstance(get_payment_provider(), HostedPaymentProvider)
+
+
+def _hosted() -> HostedPaymentProvider:
+    provider = get_payment_provider()
+    if not isinstance(provider, HostedPaymentProvider):
+        raise PaymentError("this booking is not paid on a payment page")
+    return provider
+
+
+def _pending(external_id: str, payment_url: str | None) -> dict:
+    return {"status": "pending", "payment_id": external_id, "payment_url": payment_url}
+
+
+async def _booking_out(conn: asyncpg.Connection, booking_id: str) -> dict:
+    row = await conn.fetchrow(
+        """
+        SELECT id::text, code, status, total_amount::float8, paid_at, checkin_date, checkout_date
+        FROM booking WHERE id = $1
+        """,
+        booking_id,
+    )
+    if row is None:
+        raise BookingNotFound("booking not found")
+    lines = await conn.fetch(
+        "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",
+        booking_id,
+    )
+    return await _row_to_out(row, lines)
+
+
+async def _last_session(
+    conn: asyncpg.Connection, booking_id: str, provider_name: str
+) -> asyncpg.Record | None:
+    """The booking's newest payment session, with its address and how far it got."""
+    return await conn.fetchrow(
+        """
+        SELECT p.external_id, p.payment_url
+        FROM payment p
+        WHERE p.booking_id = $1 AND p.provider = $2 AND p.status = 'pending'
+          AND p.external_id IS NOT NULL
+        ORDER BY p.created_at DESC
+        LIMIT 1
+        """,
+        booking_id,
+        provider_name,
+    )
+
+
+async def start_payment(booking_id: str, conn: asyncpg.Connection | None = None) -> dict:
+    """Open a payment on the provider's page, or pick up the one that is already open.
+
+    Answers `{"status": "pending", "payment_id", "payment_url"}`: send the guest to the address.
+    A guest who clicks twice gets the same page, not a second payment. If the open payment turns
+    out to have been paid already, the confirmed booking comes back instead.
+    """
+    provider = _hosted()
+    async with _connection(conn) as c, _pay_lock(c, booking_id):
+        booking = await c.fetchrow(
+            """
+            SELECT status, code, total_amount::float8, hold_expires_at, origin
+            FROM booking WHERE id = $1
+            """,
+            booking_id,
+        )
+        if booking is None:
+            raise BookingNotFound("booking not found")
+        if booking["origin"] != "web":
+            # The OTA collected the money; no guest pays this one on a page (see _provider_for).
+            raise PaymentError("this booking is settled by its channel")
+        if booking["status"] in ("confirmed", "paid"):
+            return await _booking_out(c, booking_id)
+        if booking["status"] != "hold":
+            raise PaymentError(f"booking is not holdable (status={booking['status']})")
+        if booking["hold_expires_at"] is not None and booking["hold_expires_at"] < dt.datetime.now(
+            dt.UTC
+        ):
+            raise PaymentError("hold expired; please book again")
+
+        last = await _last_session(c, booking_id, provider.name)
+        if last is not None:
+            outcome = await _settle_session(c, provider, booking_id, last["external_id"])
+            if outcome == "pending":
+                return _pending(last["external_id"], last["payment_url"])
+            if outcome == "confirmed":
+                return await _booking_out(c, booking_id)
+            if outcome in ("returned", "stuck"):
+                still_a_hold = await c.fetchval(
+                    "SELECT status FROM booking WHERE id = $1", booking_id
+                )
+                if still_a_hold != "hold" or outcome == "stuck":
+                    raise PaymentError(_after_charge(outcome))
+            # "failed" (or a charge returned with the hold still alive): that attempt is over.
+
+        amount = booking["total_amount"]
+        base = settings.app_base_url.rstrip("/")
+        session = await provider.create_session(
+            booking_id,
+            amount,
+            return_url=f"{base}/checkout/{booking_id}/return",
+            description=f"Бронь {booking['code']}",
+            ttl_sec=settings.hold_ttl_min * 60,
+        )
+        await _record_payment(
+            c,
+            booking_id,
+            provider.name,
+            amount,
+            "pending",
+            session.external_id,
+            session.payment_url,
+        )
+        log.info("payment-session-opened", booking_id=booking_id, external_id=session.external_id)
+        return _pending(session.external_id, session.payment_url)
+
+
+async def sync_payment(booking_id: str, conn: asyncpg.Connection | None = None) -> dict:
+    """Ask the provider where the booking's payment stands and bring the booking in line.
+
+    The guest's browser calls this when it comes back from the payment page, so the page does not
+    depend on the notification having arrived. Answers `{"state", "payment_url", "booking"}`:
+    "confirmed" (with the booking), "pending" (with the page's address), "failed" (that attempt is
+    over, the hold lives on), "returned" (paid too late for the stay; the money went back), "stuck"
+    (paid, not confirmed and not yet returned: support must act) or "none" (no payment started).
+    """
+    provider = _hosted()
+    async with _connection(conn) as c, _pay_lock(c, booking_id, wait_sec=3.0):
+        if await c.fetchval("SELECT 1 FROM booking WHERE id = $1", booking_id) is None:
+            raise BookingNotFound("booking not found")
+        last = await _last_session(c, booking_id, provider.name)
+        if last is None:
+            return {"state": "none", "payment_url": None, "booking": None}
+        state = await _settle_session(c, provider, booking_id, last["external_id"])
+        return {
+            "state": state,
+            "payment_url": last["payment_url"] if state == "pending" else None,
+            "booking": await _booking_out(c, booking_id) if state == "confirmed" else None,
+        }
+
+
+async def receive_notification(provider_name: str, body: bytes, headers: Mapping[str, str]) -> None:
+    """Act on a provider's notification. Raises NotificationRejected, or PaymentBusy to be retried."""
+    provider = get_payment_provider()
+    if not isinstance(provider, HostedPaymentProvider) or provider.name != provider_name:
+        raise NotificationRejected(404, "unknown provider")
+    try:
+        external_id = provider.read_notification(body, headers)
+    except NotificationError as exc:
+        log.warning("payment-notification-rejected", provider=provider_name, reason=str(exc))
+        raise NotificationRejected(400, "invalid notification") from exc
+    async with _connection(None) as c:
+        booking_id = await c.fetchval(
+            """
+            SELECT booking_id::text FROM payment
+            WHERE provider = $1 AND external_id = $2 AND status = 'pending' LIMIT 1
+            """,
+            provider.name,
+            external_id,
+        )
+        if booking_id is None:
+            # Answer 200 all the same: a provider that is told "no" asks again for ever.
+            log.warning(
+                "payment-notification-unknown", provider=provider_name, external_id=external_id
+            )
+            return
+        async with _pay_lock(c, booking_id, wait_sec=3.0):
+            await _settle_session(c, provider, booking_id, external_id)
+
+
+async def reconcile_pending(*, min_age_sec: float = RECONCILE_MIN_AGE_SEC, limit: int = 50) -> int:
+    """Settle the payments whose result never reached the core. Returns how many it looked at.
+
+    Two kinds: sessions still open here (ask the provider), and charges recorded as paid whose
+    booking was neither confirmed nor paid back, because the process died or the refund failed
+    in between (finish what the earlier call started).
+    """
+    try:
+        provider = get_payment_provider()
+    except ValueError:
+        return 0
+    if not isinstance(provider, HostedPaymentProvider):
+        return 0
+    seen = 0
+    async with _connection(None) as c:
+        rows = await c.fetch(
+            """
+            SELECT p.booking_id::text AS booking_id, p.external_id
+            FROM payment p
+            WHERE p.provider = $1 AND p.status = 'pending' AND p.external_id IS NOT NULL
+              AND p.created_at < now() - make_interval(secs => $2)
+              AND p.created_at > now() - $4::interval
+              AND NOT EXISTS (
+                    SELECT 1 FROM payment q
+                    WHERE q.booking_id = p.booking_id AND q.external_id = p.external_id
+                      AND q.status IN ('succeeded', 'failed'))
+            UNION
+            SELECT s.booking_id::text, s.external_id
+            FROM payment s
+            JOIN booking b ON b.id = s.booking_id
+            WHERE s.provider = $1 AND s.status = 'succeeded' AND s.external_id IS NOT NULL
+              AND b.status NOT IN ('confirmed', 'paid', 'refunded')
+              AND s.created_at < now() - make_interval(secs => $2)
+              AND s.created_at > now() - $4::interval
+              AND NOT EXISTS (
+                    SELECT 1 FROM payment r
+                    WHERE r.booking_id = s.booking_id AND r.status = 'refunded'
+                      AND r.created_at >= s.created_at)
+            LIMIT $3
+            """,
+            provider.name,
+            float(min_age_sec),
+            limit,
+            RECONCILE_MAX_AGE,
+        )
+        for row in rows:
+            try:
+                async with _pay_lock(c, row["booking_id"]):
+                    await _settle_session(c, provider, row["booking_id"], row["external_id"])
+                seen += 1
+            except PaymentBusy:
+                continue  # someone is on it right now
+            except Exception as exc:
+                log.error(
+                    "payment-reconcile-failed",
+                    booking_id=row["booking_id"],
+                    external_id=row["external_id"],
+                    error=repr(exc),
+                )
+    return seen
+
+
+async def _settle_session(
+    conn: asyncpg.Connection,
+    provider: HostedPaymentProvider,
+    booking_id: str,
+    external_id: str,
+) -> str:
+    """Bring the booking in line with what the provider says about one payment.
+
+    The booking's "pay" lock must be held. Idempotent: a payment already closed in the ledger is
+    not asked about again. Answers "pending" (nothing to do yet), "failed" (the attempt is over),
+    or what became of a successful charge: "confirmed", "returned" or "stuck".
+    """
+    rows = await conn.fetch(
+        """
+        SELECT status, amount::float8 AS amount FROM payment
+        WHERE booking_id = $1 AND provider = $2 AND external_id = $3
+        """,
+        booking_id,
+        provider.name,
+        external_id,
+    )
+    recorded = {r["status"]: r["amount"] for r in rows}
+    if "failed" in recorded:
+        return "failed"
+    if "succeeded" in recorded:
+        return await _spend_charge(conn, provider, booking_id, external_id, recorded["succeeded"])
+    if "pending" not in recorded:
+        log.warning("payment-session-unknown", booking_id=booking_id, external_id=external_id)
+        return "pending"
+
+    try:
+        seen = await provider.fetch(external_id)
+    except UnknownPayment:
+        log.error("payment-unknown-to-provider", booking_id=booking_id, external_id=external_id)
+        return "pending"
+    if seen.status == "pending":
+        return "pending"
+    if seen.status == "failed":
+        await _record_payment(
+            conn, booking_id, provider.name, recorded["pending"], "failed", external_id
+        )
+        log.info("payment-failed", booking_id=booking_id, provider=provider.name)
+        return "failed"
+    # The money has moved: write that down first, then decide what it buys.
+    await _record_payment(conn, booking_id, provider.name, seen.amount, "succeeded", external_id)
+    return await _spend_charge(conn, provider, booking_id, external_id, seen.amount)
+
+
+async def _spend_charge(
+    conn: asyncpg.Connection,
+    provider: HostedPaymentProvider,
+    booking_id: str,
+    external_id: str,
+    paid: float,
+) -> str:
+    """A charge is on record: confirm the booking with it, or pay it back. Safe to repeat."""
+    booking = await conn.fetchrow(
+        """
+        SELECT id::text, code, status, total_amount::float8, checkin_date, checkout_date,
+               unit_type_id::text, hold_expires_at, origin
+        FROM booking WHERE id = $1
+        """,
+        booking_id,
+    )
+    if booking is None:
+        raise BookingNotFound("booking not found")
+    if booking["status"] in ("confirmed", "paid"):
+        return "confirmed"
+    if booking["status"] == "hold" and round(paid, 2) == round(booking["total_amount"], 2):
+        # A hold that ran out but was not reaped yet still owns its nights: the guest paid in
+        # time for the page the core gave them, so it is honoured. If the reaper wins the race,
+        # the confirmation fails and the charge goes back below.
+        async def _confirm() -> tuple[dict, asyncpg.Record]:
+            return await _confirm_hold(conn, booking)
+
+        try:
+            _, row = await serializable(conn, _confirm)
+        except Exception as exc:
+            log.error("confirmation-failed-after-charge", booking_id=booking_id, error=repr(exc))
+            returned = await _return_charge(conn, provider, booking_id, external_id, paid)
+            if returned:
+                await _close_returned_hold(conn, booking_id)
+            return "returned" if returned else "stuck"
+        log.info(
+            "booking-confirmed", booking_id=booking_id, code=row["code"], provider=provider.name
+        )
+        await _notify_confirmed(conn, booking_id, row)
+        return "confirmed"
+    # Not something this payment can buy: the booking was cancelled or reaped while the guest was
+    # on the page, or the provider took another amount than the price.
+    log.warning(
+        "late-or-wrong-payment",
+        booking_id=booking_id,
+        status=booking["status"],
+        paid=paid,
+        price=booking["total_amount"],
+    )
+    returned = await _return_charge(conn, provider, booking_id, external_id, paid)
+    return "returned" if returned else "stuck"
+
+
+async def _return_charge(
+    conn: asyncpg.Connection,
+    provider: HostedPaymentProvider,
+    booking_id: str,
+    external_id: str,
+    paid: float,
+) -> bool:
+    """Pay a charge back once: a charge already returned is not returned again."""
+    already = await conn.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM payment r
+            WHERE r.booking_id = $1 AND r.status = 'refunded'
+              AND r.created_at >= (SELECT min(s.created_at) FROM payment s
+                                   WHERE s.booking_id = $1 AND s.external_id = $2
+                                     AND s.status = 'succeeded'))
+        """,
+        booking_id,
+        external_id,
+    )
+    if already:
+        return True
+    return await _give_back(conn, provider, booking_id, paid, external_id)
+
+
+def _after_charge(outcome: str) -> str:
+    """What the guest is told when a payment was made but did not buy the stay."""
+    tail = (
+        "your payment was returned"
+        if outcome == "returned"
+        else "your payment could not be returned automatically; support will refund it"
+    )
+    return f"booking could not be confirmed; {tail}"
 
 
 _ = dt

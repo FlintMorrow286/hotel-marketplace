@@ -196,6 +196,41 @@ export interface LegalInfo {
   docs_version: string;
 }
 
+/**
+ * What POST /bookings/{id}/pay answers when the guest pays on the provider's own
+ * page: send the browser to `payment_url`. The booking is confirmed once the
+ * provider reports the payment; the return page asks (see `PaymentSync`).
+ */
+export interface PaymentRedirect {
+  status: "pending";
+  payment_id: string;
+  payment_url: string;
+}
+
+/**
+ * Where a booking's payment stands, as the provider says it:
+ * - confirmed: paid, the booking is confirmed
+ * - pending:   the guest has not finished on the provider's page
+ * - failed:    that attempt is over (declined, abandoned); the hold lives on
+ * - returned:  paid too late for the stay; the money went back
+ * - stuck:     paid, not confirmed and not yet returned: support must act
+ * - none:      no payment was started
+ */
+export type PaymentState = "confirmed" | "pending" | "failed" | "returned" | "stuck" | "none";
+
+export interface PaymentSync {
+  state: PaymentState;
+  /** The provider's page, while the payment is still open. */
+  payment_url: string | null;
+  /** The confirmed booking, so the next screen needs no second request. */
+  booking: BookingOut | null;
+}
+
+export interface PaymentConfig {
+  /** True while nobody is really charged (stub or mock provider). */
+  test_mode: boolean;
+}
+
 export interface BookingLineOut {
   date: string; // ISO date
   price: number;

@@ -19,6 +19,9 @@ import type {
   LegalInfo,
   OutboxEvent,
   OutboxMetrics,
+  PaymentConfig,
+  PaymentRedirect,
+  PaymentSync,
   RatePlan,
   ReconciliationReport,
   SyncResult,
@@ -181,6 +184,13 @@ export const legal = {
   get: (signal?: AbortSignal) => request<LegalInfo>("/legal", { signal }),
 };
 
+// ---- payments -------------------------------------------------------------
+
+export const payments = {
+  /** Whether anybody is really charged: the checkout says so only when nobody is. */
+  config: (signal?: AbortSignal) => request<PaymentConfig>("/payments/config", { signal }),
+};
+
 // ---- public catalog -------------------------------------------------------
 
 export const catalog = {
@@ -282,8 +292,17 @@ export const bookings = {
         body: { code, email },
       }),
     ),
+  // An instant provider answers with the confirmed booking; an acquirer with the
+  // address of its payment page (`status: "pending"`).
   pay: async (id: string) =>
-    request<BookingOut>(`/bookings/${id}/pay`, {
+    request<BookingOut | PaymentRedirect>(`/bookings/${id}/pay`, {
+      method: "POST",
+      headers: bookingTokenHeader(id),
+    }),
+  // The provider's own answer for the booking's payment. Called when the guest
+  // comes back from its page, so the checkout does not wait for a notification.
+  syncPayment: async (id: string) =>
+    request<PaymentSync>(`/bookings/${id}/payment/sync`, {
       method: "POST",
       headers: bookingTokenHeader(id),
     }),

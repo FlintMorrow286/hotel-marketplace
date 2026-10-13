@@ -20,7 +20,12 @@ DEFAULT_JWT_SECRET = "CHANGE_ME_SUPER_SECRET_32_PLUS_CHARS_LONG"
 MIN_JWT_SECRET_LEN = 32
 
 # Modes with a provider behind them (see app/modules/payment/provider.py).
-IMPLEMENTED_PAYMENT_MODES = {PaymentMode.STUB, PaymentMode.DELAYED_STUB, PaymentMode.FAIL}
+IMPLEMENTED_PAYMENT_MODES = {
+    PaymentMode.STUB,
+    PaymentMode.DELAYED_STUB,
+    PaymentMode.FAIL,
+    PaymentMode.MOCK_ACQUIRING,
+}
 # Modes that exist to exercise the code: delayed_stub waits, fail always fails.
 TEST_ONLY_PAYMENT_MODES = {PaymentMode.DELAYED_STUB, PaymentMode.FAIL}
 

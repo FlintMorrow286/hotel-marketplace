@@ -83,7 +83,8 @@ Staff sign in at `/admin/login`. Running it again with the same email fails on t
 | ACCESS_TOKEN_TTL_MIN, JWT_ALGORITHM | 60, HS256 | Lifetime of partner and staff sessions in minutes; token algorithm. |
 | TELEGRAM_BOT_TOKEN | unset | Starts the partner notification bot in the `jobs` process, which long-polls api.telegram.org (outbound HTTPS from the container). A token that is malformed or that Telegram rejects is logged once as `bot-polling-failed` (error level) and the bot stays off; nothing else in `jobs` is affected. |
 | SENTRY_DSN | unset | Error reporting. An error carries its exception, stack trace and request line; local variables, request bodies, the `X-Booking-Token` header, the iCal feed token in the URL and the log lines before it are not sent (`app/utils/sentry.py`). Error-level log lines are sent as events, with their text. |
-| PAYMENT_MODE, ALLOW_PRIVATE_TARGETS | stub, false | Production refuses to start with any other payment mode or with private targets on, and says so. |
+| PAYMENT_MODE | stub | `stub` confirms a booking at once; `mock_acquiring` sends the guest to a test payment page and back (see Payments below). Neither charges anyone, and each logs `payment-stub-outside-dev` at every start outside development. `fail` and `delayed_stub` are test-only, `tinkoff` has no implementation: production refuses all three. |
+| ALLOW_PRIVATE_TARGETS | false | Production refuses to start with private targets on, and says so. |
 
 The containers get every key of `.env.example` and nothing else from `.env`; the lines Compose fixes itself (`APP_ENV`, `APP_HOST`, `APP_PORT`, `DATABASE_URL`, `REDIS_URL`, `MEDIA_DIR`, `RUN_BACKGROUND_JOBS`) win over the file. `tests/test_compose_env.py` fails when a key is added to `.env.example` and not to `docker-compose.yml`. A variable left unset keeps the application's default.
 
@@ -348,7 +349,8 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
 - Restoring a backup on another physical host; it was restored on a second Compose project of the same Docker host.
 - A failed photo write (wrong owner, full disk) is answered as 415 "the file is corrupt", as `add_photo` did before
   this stack; the real error is in the `photo-decode-failed` log line.
-- Real payments: `PAYMENT_MODE=stub` is the only implemented provider.
+- Real payments: the stub and the mock acquirer (`mock_acquiring`) are the only providers; no real acquirer is
+  implemented. `HostedPaymentProvider` (`app/modules/payment/provider.py`) is where one goes.
 
 ## What startup refuses
 
@@ -362,5 +364,26 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
 - `APP_BASE_URL` is not the public `https` address;
 - `PAYMENT_MODE` is `fail` or `delayed_stub` (test-only), or has no implementation.
 
-`PAYMENT_MODE=stub` is accepted, since it is the only implemented provider, and logs a warning at every
-start: bookings are confirmed without charging anyone.
+`PAYMENT_MODE=stub` and `PAYMENT_MODE=mock_acquiring` are accepted, since no real provider exists yet, and log a
+warning (`payment-stub-outside-dev`) at every start: bookings are confirmed without charging anyone.
+
+## Payments
+
+Until there are acquiring keys, run with `PAYMENT_MODE=mock_acquiring`: the checkout sends the guest to a test
+payment page (`/mock-acquirer/pay/{id}`, served by the API, nothing to deploy), the page reports the result to the
+API the way a bank does, and the guest comes back to `/checkout/{id}/return`.
+
+- `APP_BASE_URL` must be the address guests open the site on: the payment page and the return address are built
+  from it, and the booking token lives in the tab's `sessionStorage`, which a different origin does not share.
+- The page offers three outcomes: pay, "bank refused", and "paid but the shop is not told". The last one is
+  found by the guest's return (`POST /v1/bookings/{id}/payment/sync`) or, if the guest never comes back, by the
+  `payment-reconcile` sweep in the `jobs` process (every 30 seconds, payments older than 60 seconds).
+- A payment that arrives after the booking was released (the guest paid on the page after the hold ran out) is
+  paid back automatically. `charge-not-returned` (error) is a charge that could not be paid back: refund it by
+  hand; the sweep keeps trying. `payment-reconcile-failed` (error) is a sweep that could not reach the provider.
+- A real acquirer will call `POST {APP_BASE_URL}/v1/payments/notifications/{provider}`; that path has to be
+  reachable from the internet (the notification is authenticated by the provider's signature, not by a login).
+- The mock keeps its state in the table `mock_acquirer_payment`; it is empty under any other mode.
+- Switching `PAYMENT_MODE` (stub, then the mock, then a real acquirer): a refund goes back through the provider
+  that took the money (read from the payment ledger), so bookings paid before the switch stay refundable. Payment
+  sessions still open at the moment of the switch are not settled by the new provider: switch when none is open.

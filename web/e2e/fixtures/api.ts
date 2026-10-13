@@ -186,6 +186,27 @@ export async function createHoldThroughUi(page: Page, fixture: BookingFixture): 
   return new URL(page.url()).pathname.split("/").at(-1)!;
 }
 
+/**
+ * How the API under test takes payment: `stub` confirms at once, `mock_acquiring` sends the guest
+ * to a payment page and back. Set PAYMENT_MODE for Playwright to the value the API runs with.
+ */
+export const PAYMENT_MODE = process.env.PAYMENT_MODE ?? "stub";
+export const paysOnProviderPage = PAYMENT_MODE === "mock_acquiring";
+
+const PROVIDER_PAGE = /\/mock-acquirer\/pay\/mock_/;
+
+/** On the provider's page: press one of its buttons (by default the one that pays). */
+export async function payOnProviderPage(page: Page, button: RegExp | string = /^Оплатить/) {
+  await expect(page).toHaveURL(PROVIDER_PAGE);
+  await page.getByRole("button", { name: button }).click();
+}
+
+/** Press "Оплатить" on the checkout and, when the provider has a page of its own, pay there. */
+export async function payThroughUi(page: Page): Promise<void> {
+  await page.getByRole("button", { name: /Оплатить/ }).click();
+  if (paysOnProviderPage) await payOnProviderPage(page);
+}
+
 export async function getBooking(
   request: APIRequestContext,
   id: string,

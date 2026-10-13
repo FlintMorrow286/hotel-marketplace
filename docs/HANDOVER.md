@@ -51,6 +51,10 @@ Double booking невозможен по архитектуре.
 - Панель бронирования: две отдельные галочки (оферта и согласие на обработку ПД)
   со ссылками на документы в новой вкладке, страницы `/legal/:slug` (тексты —
   заглушки до юриста) и ссылки на них в футере
+- Оплата при `PAYMENT_MODE=mock_acquiring`: чекаут уводит на страницу оплаты
+  «банка», `/checkout/:id/return` спрашивает результат и ведёт на успех, отказ
+  или «Проверить ещё раз». Строка «Тестовая оплата» — только если API говорит
+  `test_mode` (`GET /v1/payments/config`)
 - Тёмная тема следует `prefers-color-scheme`
 - Каталог и шахматка берут реальные данные из API (rate plan + сезонные цены
   показываются в шахматке корректно)
@@ -60,9 +64,9 @@ Double booking невозможен по архитектуре.
 ```bash
 cd /Users/guuu/Desktop/hotel-marketplace
 uv sync --extra bot                           # бэкенд + aiogram (Telegram-бот)
-uv run python -m app.db.migrate               # миграции (1..26)
+uv run python -m app.db.migrate               # миграции (1..27)
 uv run uvicorn app.main:app --port 8002       # API + собранный фронт на :8002
-uv run pytest tests/ -q                       # 676 тестов
+uv run pytest tests/ -q                       # 717 тестов
 uv run ruff check app tests && uv run ruff format app tests
 
 cd web && npm run build                       # пересобрать фронт после правок
@@ -82,8 +86,9 @@ inventory/generate, inventory/close, rate-plans (POST/GET), prices (POST),
 calendar (GET)
 public: properties (GET list/detail), availability
 booking: hold (header Idempotency-Key; в теле consent — оферта, ПД, версия
-документов), GET/{id}, cancel, pay, refund
+документов), GET/{id}, cancel, pay (эквайринг: 202 + payment_url), payment/sync, refund
 legal: GET /legal → {docs_version}
+payments: POST /payments/notifications/{provider} (подпись провайдера), GET /payments/config
 admin: reports/commission
 healthz, readyz
 
@@ -91,9 +96,9 @@ healthz, readyz
 
 ```
 hotel-marketplace/
-├── migrations/0001..0026*.sql
+├── migrations/0001..0027*.sql
 ├── app/modules/{auth,property,inventory,booking,payment,rate,admin,notification,legal}/
-├── app/{jobs/reaper.py, db/{pool,migrate}.py, config/{settings,legal,payment}.py}
+├── app/{jobs/{reaper,payments}.py, db/{pool,migrate}.py, config/{settings,legal,payment}.py}
 ├── web/src/{pages/{guest,partner}, components/ui, api/}
 ├── tests/   (pytest + pytest-asyncio)
 └── docs/{ARCHITECTURE.md, LEGAL.md, HANDOVER.md}
@@ -148,8 +153,13 @@ hotel-marketplace/
   `booking.docs_version/docs_accepted_at`, у броней каналов NULL. Версию менять
   при любой правке текстов (`web/src/legal/documents.ts` — пока заглушки).
   В тестах тело согласия — `tests/_consent.py`
-- Оплата — заглушка `PAYMENT_MODE=stub`; реальный эквайринг = реализация того
-  же интерфейса `PaymentProvider`
+- Оплата: `PAYMENT_MODE=stub` (мгновенно) или `mock_acquiring` (страница оплаты,
+  уведомление, возврат гостя; ключей не нужно, `docs/ARCHITECTURE.md` §4.9).
+  Настоящий эквайринг = реализация `HostedPaymentProvider`; чек 54-ФЗ не сделан.
+  Брони каналов эквайринг не видят (их деньги собрала OTA)
+- Для эквайринга `APP_BASE_URL` — адрес, на котором гость открыл сайт (оттуда
+  строятся страница оплаты и адрес возврата, токен брони живёт в sessionStorage
+  вкладки). e2e и CI гоняются на `mock_acquiring`
 - Часовой пояс Крыма — `Europe/Simferopol` (не Asia)
 - Комиссия снапшотится при подтверждении; отчёты её не пересчитывают
 - Пароль в auth — argon2id, как и API-ключи; старые SHA-256 строки

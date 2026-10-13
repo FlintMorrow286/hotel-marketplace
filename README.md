@@ -72,10 +72,12 @@ WebSocket (FastAPI) для live-обновления шахматки.
 
 **Инфра:** self-hosted, Docker Compose (postgres 16, redis 7, api, web).
 
-**Платёж — заглушка.** `PAYMENT_MODE=stub` — имитация успешной оплаты для разработки ядра
-(мгновенный `confirmed`). Реальный эквайринг — отдельная реализация интерфейса
-`PaymentProvider`, подключается после решения юридических вопросов. **Ядро бронирования
-не зависит от того, какой режим включён.**
+**Платёж — заглушка или мок-эквайринг.** `PAYMENT_MODE=stub` — имитация успешной оплаты
+для разработки ядра (мгновенный `confirmed`). `PAYMENT_MODE=mock_acquiring` — то же без
+ключей, но по-настоящему: гость уходит на страницу оплаты «банка», банк присылает подписанное
+уведомление, гость возвращается на сайт (`docs/ARCHITECTURE.md` §4.9). Реальный эквайринг —
+реализация `HostedPaymentProvider`, подключается, когда будут ключи и решены юридические
+вопросы. **Ядро бронирования не зависит от того, какой режим включён.**
 
 ---
 
@@ -148,7 +150,10 @@ cd web && npm ci && npm test && npm run typecheck   # vitest + типы
 uv run python scripts/load_holds.py --n 100 --units 1     # 1 x 201, 99 x 409
 uv run python scripts/load_holds.py --n 100 --units 100   # 100 x 201 на одних и тех же строках
 # e2e гостевого пути в браузере: web/playwright.config.ts, `npm run e2e` (см. job `e2e` в CI);
-# API для него поднимайте с *_LIMIT_PER_MIN=1000, как в CI, иначе rate limit даст 429
+# API для него поднимайте с *_LIMIT_PER_MIN=1000, как в CI, иначе rate limit даст 429.
+# CI гоняет e2e на PAYMENT_MODE=mock_acquiring: поднимите API так же, с APP_BASE_URL=адресом,
+# на котором открывает сайт Playwright, и задайте PAYMENT_MODE и Playwright'у (без него
+# сценарии страницы оплаты пропускаются)
 ```
 
 `scripts/load_holds.py` сам создаёт и убирает тестовый номер и завершается с кодом 1,
@@ -200,5 +205,8 @@ API со встроенным фронтендом на порту 8002) как 
   отказ от запуска с небезопасной конфигурацией (`docs/ARCHITECTURE.md` §4)
 - ✅ Проверки: pytest, vitest, Playwright (`web/e2e`), `scripts/load_holds.py`; упаковка — Dockerfile и
   `docker-compose.yml` (`docs/DEPLOY.md`)
-- ⏳ **Дальше:** реальный эквайринг (Tinkoff/YooKassa; интерфейс `PaymentProvider` готов), сверка платежей
+- ✅ **Эквайринг на мок-провайдере:** сессия → страница оплаты → уведомление → возврат гостя, сверка потерянных
+  уведомлений, автоматический возврат запоздавших платежей (`PAYMENT_MODE=mock_acquiring`)
+- ⏳ **Дальше:** настоящий эквайринг (Tinkoff/YooKassa: реализовать `HostedPaymentProvider`, когда будут ключи),
+  фискальный чек 54-ФЗ
   с провайдером, решения по `docs/LEGAL.md`
