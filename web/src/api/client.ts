@@ -21,6 +21,10 @@ import type {
   OutboxMetrics,
   PublicConfig,
   PaymentRedirect,
+  PayoutBalances,
+  PayoutDetail,
+  PayoutOut,
+  PendingBookings,
   PaymentSync,
   RatePlan,
   ReconciliationReport,
@@ -160,6 +164,43 @@ async function request<T>(
   }
 
   return data as T;
+}
+
+/**
+ * Fetches a file the API serves behind the session (a CSV export): a plain link cannot carry the
+ * Authorization header, so the page reads the bytes itself.
+ */
+export async function fetchFile(path: string): Promise<Blob> {
+  const token = getToken();
+  const response = await fetch(`${BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    let detail = `request failed: ${response.status}`;
+    try {
+      detail = ((await response.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      // the body was not JSON: the status line is all there is
+    }
+    throw new ApiException(response.status, detail);
+  }
+  return response.blob();
+}
+
+/** Saves bytes under a name, as a link with `download` would. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadFile(path: string, filename: string): Promise<void> {
+  saveBlob(await fetchFile(path), filename);
 }
 
 // ---- auth -----------------------------------------------------------------
@@ -373,6 +414,38 @@ export const admin = {
       `/admin/outbox/${eventId}/retry`,
       { method: "POST" },
     ),
+  payoutBalances: (signal?: AbortSignal) =>
+    request<PayoutBalances>("/admin/payouts/balances", { signal }),
+  payouts: (status: string | null, signal?: AbortSignal) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return request<PayoutOut[]>(`/admin/payouts${qs}`, { signal });
+  },
+  payout: (id: string, signal?: AbortSignal) =>
+    request<PayoutDetail>(`/admin/payouts/${id}`, { signal }),
+  /** Builds the drafts for one partner, or for all of them. */
+  generatePayouts: (partnerId?: string) =>
+    request<{ payouts: PayoutOut[] }>("/admin/payouts/generate", {
+      method: "POST",
+      body: partnerId ? { partner_id: partnerId } : {},
+    }),
+  approvePayout: (id: string) =>
+    request<PayoutOut>(`/admin/payouts/${id}/approve`, { method: "POST" }),
+  payPayout: (id: string, reference: string) =>
+    request<PayoutOut>(`/admin/payouts/${id}/paid`, {
+      method: "POST",
+      body: { reference },
+    }),
+  /**
+   * `expect` is what the screen believes it cancels. Another operator may have approved the draft
+   * meanwhile; the API then answers 409 instead of cancelling the approved payout.
+   */
+  cancelPayout: (id: string, expect: "draft" | "approved") =>
+    request<{ id: string; outcome: "discarded" | "cancelled" }>(
+      `/admin/payouts/${id}/cancel`,
+      { method: "POST", body: { expect } },
+    ),
+  downloadPayout: (id: string, number: number) =>
+    downloadFile(`/admin/payouts/${id}/export.csv`, `payout-${number}.csv`),
   emails: (status: string | null, signal?: AbortSignal) => {
     const qs = status ? `?status=${encodeURIComponent(status)}` : "";
     return request<AdminEmailList>(`/admin/emails${qs}`, { signal });
@@ -538,6 +611,17 @@ export const partner = {
         signal,
       });
     },
+  },
+  payouts: {
+    summary: (signal?: AbortSignal) =>
+      request<PayoutBalances>("/partner/payouts/summary", { signal }),
+    pending: (limit: number, signal?: AbortSignal) =>
+      request<PendingBookings>(`/partner/payouts/pending?limit=${limit}`, { signal }),
+    list: (signal?: AbortSignal) => request<PayoutOut[]>("/partner/payouts", { signal }),
+    get: (id: string, signal?: AbortSignal) =>
+      request<PayoutDetail>(`/partner/payouts/${id}`, { signal }),
+    download: (id: string, number: number) =>
+      downloadFile(`/partner/payouts/${id}/export.csv`, `payout-${number}.csv`),
   },
   telegram: {
     status: (signal?: AbortSignal) =>

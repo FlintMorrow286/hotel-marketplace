@@ -8,6 +8,7 @@ d. Commission status matches booking status; kept_amount exists only on refunded
 e. Confirmed/paid/refunded bookings have their lifecycle outbox events, and booking events never reference a missing booking.
 f. Booking-line prices sum to total_amount and dates cover exactly checkin through checkout minus one day.
 g. Holds expired by more than five minutes are warnings for a lagging reaper, not violations.
+h. Every payout's gross, commission, net and line count equal the sums over its lines, and net is gross minus commission.
 """
 
 from __future__ import annotations
@@ -218,6 +219,26 @@ async def check_connection(conn: asyncpg.Connection) -> CheckReport:
         )
         _add(report, report.warnings, "hold_expiry (g)", [row["item"] for row in rows])
 
+        rows = await conn.fetch(
+            """
+            SELECT po.id::text AS item
+            FROM payout po
+            LEFT JOIN (
+                SELECT payout_id,
+                       sum(gross_amount) AS gross, sum(commission_amount) AS commission,
+                       sum(net_amount) AS net, count(*) AS lines
+                FROM payout_line
+                GROUP BY payout_id
+            ) l ON l.payout_id = po.id
+            WHERE po.gross_amount <> coalesce(l.gross, 0)
+               OR po.commission_amount <> coalesce(l.commission, 0)
+               OR po.net_amount <> coalesce(l.net, 0)
+               OR po.line_count <> coalesce(l.lines, 0)
+               OR po.net_amount <> po.gross_amount - po.commission_amount
+            """
+        )
+        _add(report, report.violations, "payouts (h)", [row["item"] for row in rows])
+
     return report
 
 
@@ -343,10 +364,33 @@ async def run_self_test(dsn: str) -> None:
                 event_type text NOT NULL
             )
             """,
+            """
+            CREATE TABLE payout (
+                id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                gross_amount numeric(12,2) NOT NULL, commission_amount numeric(12,2) NOT NULL,
+                net_amount numeric(12,2) NOT NULL, line_count integer NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE payout_line (
+                id uuid PRIMARY KEY DEFAULT gen_random_uuid(), payout_id uuid NOT NULL,
+                gross_amount numeric(12,2) NOT NULL, commission_amount numeric(12,2) NOT NULL,
+                net_amount numeric(12,2) NOT NULL
+            )
+            """,
         ):
             await conn.execute(statement)
 
         start, unit_id, hold_id, confirmed_id = await _self_test_seed(conn)
+        payout_id = await conn.fetchval(
+            "INSERT INTO payout (gross_amount, commission_amount, net_amount, line_count) "
+            "VALUES (150, 18, 132, 2) RETURNING id::text"
+        )
+        await conn.execute(
+            "INSERT INTO payout_line (payout_id, gross_amount, commission_amount, net_amount) "
+            "VALUES ($1, 100, 12, 88), ($1, 50, 6, 44)",
+            payout_id,
+        )
         clean = await check_connection(conn)
         if clean.violations or clean.warnings:
             raise AssertionError(f"self-test clean state failed: {clean.as_dict()}")
@@ -387,6 +431,13 @@ async def run_self_test(dsn: str) -> None:
                 "UPDATE booking_line SET price = price + 1 WHERE booking_id = $1 AND date = $2",
                 (confirmed_id, start),
                 "booking_lines (f)",
+            ),
+            (
+                "payouts (h)",
+                "UPDATE payout_line SET net_amount = net_amount + 1, gross_amount = gross_amount + 1 "
+                "WHERE payout_id = $1 AND gross_amount = 100",
+                (payout_id,),
+                "payouts (h)",
             ),
         )
         for label, sql, params, expected in cases:
@@ -433,6 +484,12 @@ async def run_self_test(dsn: str) -> None:
                     "UPDATE booking_line SET price = 75 WHERE booking_id = $1 AND date = $2",
                     confirmed_id,
                     start,
+                )
+            elif label == "payouts (h)":
+                await conn.execute(
+                    "UPDATE payout_line SET net_amount = net_amount - 1, "
+                    "gross_amount = gross_amount - 1 WHERE payout_id = $1 AND gross_amount = 101",
+                    payout_id,
                 )
 
         await conn.execute(
@@ -486,7 +543,7 @@ async def _main() -> int:
         if args.json:
             print(json.dumps({"self_test": "passed"}))
         else:
-            print("SELF-TEST PASS: clean state, invariants (a)-(f), and warning (g)")
+            print("SELF-TEST PASS: clean state, invariants (a)-(f) and (h), and warning (g)")
         return 0
     report = await check_dsn(dsn)
     _print_report(report, args.json)

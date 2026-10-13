@@ -33,6 +33,43 @@ const knownErrors = [
     message: "Условия обновились. Ознакомьтесь с ними и подтвердите согласие заново.",
   },
   {
+    detail: "the draft is out of date: bookings changed since it was made; rebuild it",
+    message: "Черновик устарел: брони изменились. Пересчитайте его.",
+  },
+  {
+    detail: "payout is approved, only a draft can be approved",
+    message: "Утвердить можно только черновик. Обновите страницу.",
+  },
+  {
+    detail: "payout is draft, only an approved payout can be marked paid",
+    message: "Отметить выплаченной можно только утверждённую выплату. Обновите страницу.",
+  },
+  {
+    detail: "payout is paid, only a draft or an approved payout can be cancelled",
+    message: "Эту выплату уже нельзя отменить: деньги ушли или она отменена.",
+  },
+  {
+    detail: "the payout is below the minimum of 5000",
+    message: "Сумма меньше минимальной выплаты. Дождитесь новых броней или измените минимум.",
+  },
+  {
+    detail: "MONEY_FLOW='direct_to_partner': payouts exist only for agent_collect, where the platform holds the money.",
+    message:
+      "Выплаты работают только когда деньги гостей принимает платформа (MONEY_FLOW=agent_collect).",
+  },
+  {
+    detail: "payout is approved, not draft: nothing was changed",
+    message: "Выплату уже изменил другой оператор. Обновите страницу и проверьте её состояние.",
+  },
+  {
+    detail: "payout is draft, not approved: nothing was changed",
+    message: "Выплату уже изменил другой оператор. Обновите страницу и проверьте её состояние.",
+  },
+  {
+    detail: "payout not found",
+    message: "Выплата не найдена. Обновите страницу.",
+  },
+  {
     detail: "payment failed",
     message: "Платёж не прошёл. Деньги не списаны, попробуйте ещё раз.",
   },

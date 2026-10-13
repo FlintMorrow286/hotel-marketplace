@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { admin, ApiException, bookings, legal, site } from "./client";
+import { admin, ApiException, bookings, fetchFile, legal, partner, site } from "./client";
 
 class MemoryStorage {
   private data = new Map<string, string>();
@@ -133,6 +133,89 @@ describe("the booking access token", () => {
     await admin.retryEmail("e1");
     expect(lastRequest().url).toBe("/v1/admin/emails/e1/retry");
     expect(lastRequest().init.method).toBe("POST");
+  });
+
+  it("asks for the operator's payouts with their filters and acts on them with POST", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(reply({})));
+
+    await admin.payoutBalances();
+    expect(lastRequest().url).toBe("/v1/admin/payouts/balances");
+    await admin.payouts("paid");
+    expect(lastRequest().url).toBe("/v1/admin/payouts?status=paid");
+    await admin.payouts(null);
+    expect(lastRequest().url).toBe("/v1/admin/payouts");
+    await admin.payout("p1");
+    expect(lastRequest().url).toBe("/v1/admin/payouts/p1");
+
+    await admin.generatePayouts("partner-1");
+    expect(lastRequest().url).toBe("/v1/admin/payouts/generate");
+    expect(JSON.parse(lastRequest().init.body as string)).toEqual({ partner_id: "partner-1" });
+    await admin.generatePayouts();
+    expect(JSON.parse(lastRequest().init.body as string)).toEqual({});
+
+    await admin.approvePayout("p1");
+    expect([lastRequest().url, lastRequest().init.method]).toEqual([
+      "/v1/admin/payouts/p1/approve",
+      "POST",
+    ]);
+    await admin.payPayout("p1", "ПП № 4711");
+    expect(lastRequest().url).toBe("/v1/admin/payouts/p1/paid");
+    expect(JSON.parse(lastRequest().init.body as string)).toEqual({ reference: "ПП № 4711" });
+    await admin.cancelPayout("p1", "draft");
+    expect(lastRequest().url).toBe("/v1/admin/payouts/p1/cancel");
+    expect(JSON.parse(lastRequest().init.body as string)).toEqual({ expect: "draft" });
+    await admin.cancelPayout("p1", "approved");
+    expect(JSON.parse(lastRequest().init.body as string)).toEqual({ expect: "approved" });
+  });
+
+  it("reads the partner's own statement from the partner routes", async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(reply([])));
+
+    await partner.payouts.summary();
+    expect(lastRequest().url).toBe("/v1/partner/payouts/summary");
+    await partner.payouts.pending(200);
+    expect(lastRequest().url).toBe("/v1/partner/payouts/pending?limit=200");
+    await partner.payouts.pending(400);
+    expect(lastRequest().url).toBe("/v1/partner/payouts/pending?limit=400");
+    await partner.payouts.list();
+    expect(lastRequest().url).toBe("/v1/partner/payouts");
+    await partner.payouts.get("p1");
+    expect(lastRequest().url).toBe("/v1/partner/payouts/p1");
+  });
+
+  describe("a file behind the session", () => {
+    it("is fetched with the token, which a plain link could not carry", async () => {
+      localStorage.setItem("hm_access_token", "jwt-1");
+      fetchMock.mockResolvedValueOnce(
+        new Response("a;b", { status: 200, headers: { "Content-Type": "text/csv" } }),
+      );
+
+      const blob = await fetchFile("/partner/payouts/p1/export.csv");
+
+      const { url, init } = lastRequest();
+      expect(url).toBe("/v1/partner/payouts/p1/export.csv");
+      expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-1");
+      expect(await blob.text()).toBe("a;b");
+    });
+
+    it("fails with the API's own reason when the file is refused", async () => {
+      fetchMock.mockResolvedValueOnce(reply({ detail: "payout not found" }, 404));
+
+      await expect(fetchFile("/partner/payouts/x/export.csv")).rejects.toMatchObject({
+        name: "ApiException",
+        status: 404,
+        message: "payout not found",
+      });
+    });
+
+    it("fails with the status when the answer is not JSON", async () => {
+      fetchMock.mockResolvedValueOnce(new Response("<html>bad gateway</html>", { status: 502 }));
+
+      await expect(fetchFile("/admin/payouts/x/export.csv")).rejects.toMatchObject({
+        status: 502,
+        message: "request failed: 502",
+      });
+    });
   });
 
   it("reads the current documents version from /v1/legal", async () => {

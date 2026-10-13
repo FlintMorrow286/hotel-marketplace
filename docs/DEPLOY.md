@@ -356,6 +356,9 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   this stack; the real error is in the `photo-decode-failed` log line.
 - Real payments: the stub and the mock acquirer (`mock_acquiring`) are the only providers; no real acquirer is
   implemented. `HostedPaymentProvider` (`app/modules/payment/provider.py`) is where one goes.
+- Payouts were exercised on the development database through the HTTP API (a draft, approval, a paid mark with a
+  reference, the CSV, the partner's own view and its isolation) with stays moved into the past by SQL; the
+  statement a bank or an accountant would want was not reviewed by one.
 - Mail through a real provider: delivery was exercised against an SMTP server on the same host (aiosmtpd, no TLS)
   and the protocol against a fake one in the test suite. STARTTLS and SSL, a provider's own limits and its answers
   to spam checks, SPF/DKIM/DMARC for the sender's domain and inbox placement were not.
@@ -403,6 +406,33 @@ always, the guest for a web booking); the `jobs` process sends them every 5 seco
 - **Personal data:** a letter row holds the recipient's address, and the log backend also the text. Sent rows are
   deleted after 30 days (`MAIL_SENT_RETENTION_DAYS`), failed ones after 180 (`MAIL_FAILED_RETENTION_DAYS`) by the
   `jobs` process. After a real delivery the text is not kept.
+
+## Payouts to partners
+
+The platform collects the guests' money and owes each partner the booking amounts less its commission. The
+operator turns that into transfers in **admin → "Выплаты"** (`/admin/payouts`); the transfer itself is made in the
+bank, outside the system. Design and rules: `docs/ARCHITECTURE.md` §4.11.
+
+1. **Build** drafts ("Сформировать" for one partner, "Сформировать для всех"). A draft holds the bookings payable by
+   the rule and the corrections to money paid earlier; building it again rebuilds it in place.
+2. **Check and approve.** Approving is refused with "Черновик устарел" when a booking changed since the draft was
+   built (a guest cancelled): rebuild it and look again. An approved payout is frozen.
+3. **Transfer the money** in the bank. "Скачать CSV" gives the list (UTF-8 with BOM, `;`-separated, kopecks after a comma).
+4. **Mark it paid** with the bank's payment order number. A payout approved by mistake and not yet paid can be
+   cancelled; a paid one cannot.
+
+- **There are no payout rules yet.** The placeholders are `PAYOUT_ELIGIBLE_FROM` (`checkout`), `PAYOUT_DELAY_DAYS`
+  (`0`) and `PAYOUT_MIN_AMOUNT` (`0`) in `app/config/legal.py`; a wrong value stops the containers at boot with the
+  reason. The partners' pages show the rule that is in force, read from the API.
+- Nothing here is scheduled: payouts are built when an operator asks. Partners' bank details and tax status are not
+  stored (personal data, `docs/LEGAL.md` §6): the payment order is made outside the system.
+- Under `PAYMENT_MODE=stub` or `mock_acquiring` nobody is charged, so these payouts are exercises; both pages say so.
+- `docker compose exec -T app python -m scripts.check_invariants` also checks that every payout's totals equal the
+  sum of its lines (invariant h).
+- `MONEY_FLOW=direct_to_partner` is not supported: the payout pages answer 503 with the reason.
+- A property cannot change its partner in the application. If one is moved in the database after payouts were
+  made, the corrections for bookings already paid out go to the new owner, not to the partner who was paid: settle
+  those by hand.
 
 ## Payments
 

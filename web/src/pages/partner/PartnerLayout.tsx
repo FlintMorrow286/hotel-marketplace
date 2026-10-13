@@ -23,6 +23,12 @@ export function PartnerLayout() {
           >
             Бронирования
           </Link>
+          <Link
+            to="/partner/payouts"
+            className="inline-flex min-h-10 items-center rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
+          >
+            Выплаты
+          </Link>
         </div>
       </div>
       <Outlet />

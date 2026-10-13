@@ -145,6 +145,8 @@ def create_app() -> FastAPI:
     from app.modules.payment.mock_acquirer import router as mock_acquirer_router
     from app.modules.payment.routes import payments_router
     from app.modules.payment.routes import router as payment_router
+    from app.modules.payout.routes import admin_router as payout_admin_router
+    from app.modules.payout.routes import partner_router as payout_partner_router
     from app.modules.property.photo_routes import router as photo_router
     from app.modules.property.routes import router as property_router
     from app.modules.property.unit_type_routes import router as unit_type_router
@@ -163,6 +165,8 @@ def create_app() -> FastAPI:
     app.include_router(site_router)
     app.include_router(notification_router)
     app.include_router(payment_router)
+    app.include_router(payout_admin_router)
+    app.include_router(payout_partner_router)
     app.include_router(payments_router)
     app.include_router(mock_acquirer_router)
     app.include_router(rate_router)

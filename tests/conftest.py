@@ -85,6 +85,8 @@ _CLEANUP = (
     "DELETE FROM webhook_subscription; "
     "DELETE FROM api_key; "
     "DELETE FROM ical_subscription; "
+    "DELETE FROM payout_line; "
+    "DELETE FROM payout; "
     "DELETE FROM booking_line; "
     "DELETE FROM payment; "
     "DELETE FROM email_message; "

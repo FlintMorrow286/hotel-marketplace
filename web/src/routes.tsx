@@ -13,12 +13,14 @@ import { PartnerLayout } from "@/pages/partner/PartnerLayout";
 import { PartnerDashboardPage } from "@/pages/partner/PartnerDashboardPage";
 import { PartnerCalendarPage } from "@/pages/partner/PartnerCalendarPage";
 import { PartnerBookingsPage } from "@/pages/partner/PartnerBookingsPage";
+import { PartnerPayoutsPage } from "@/pages/partner/PartnerPayoutsPage";
 
 import { AdminLayout } from "@/pages/admin/AdminLayout";
 import { AdminLoginPage } from "@/pages/admin/AdminLoginPage";
 import { AdminReportsPage } from "@/pages/admin/AdminReportsPage";
 import { AdminModerationPage } from "@/pages/admin/AdminModerationPage";
 import { AdminEmailPage } from "@/pages/admin/AdminEmailPage";
+import { AdminPayoutsPage } from "@/pages/admin/AdminPayoutsPage";
 import { AdminOutboxPage } from "@/pages/admin/AdminOutboxPage";
 import { AdminReconciliationPage } from "@/pages/admin/AdminReconciliationPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
@@ -57,6 +59,7 @@ export const routes: RouteObject[] = [
           { index: true, element: <PartnerDashboardPage /> },
           { path: "calendar", element: <PartnerCalendarPage /> },
           { path: "bookings", element: <PartnerBookingsPage /> },
+          { path: "payouts", element: <PartnerPayoutsPage /> },
         ],
       },
       { path: "admin/login", element: <AdminLoginPage /> },
@@ -68,6 +71,7 @@ export const routes: RouteObject[] = [
           { path: "moderation", element: <AdminModerationPage /> },
           { path: "outbox", element: <AdminOutboxPage /> },
           { path: "emails", element: <AdminEmailPage /> },
+          { path: "payouts", element: <AdminPayoutsPage /> },
           { path: "reconciliation", element: <AdminReconciliationPage /> },
         ],
       },

@@ -35,6 +35,30 @@ const MESSAGES: ReadonlyArray<[RegExp, string]> = [
     /stay is already over/i,
     "Проживание уже закончилось, бронь отменить нельзя. Если нужен возврат, обратитесь к владельцу объекта.",
   ],
+  // payouts
+  [/the draft is out of date/i, "Черновик устарел: брони изменились. Пересчитайте его."],
+  [/only a draft can be approved/i, "Утвердить можно только черновик. Обновите страницу."],
+  [
+    /only an approved payout can be marked paid/i,
+    "Отметить выплаченной можно только утверждённую выплату. Обновите страницу.",
+  ],
+  [
+    /only a draft or an approved payout can be cancelled/i,
+    "Эту выплату уже нельзя отменить: деньги ушли или она отменена.",
+  ],
+  [
+    /the payout is below the minimum/i,
+    "Сумма меньше минимальной выплаты. Дождитесь новых броней или измените минимум.",
+  ],
+  [
+    /payouts exist only for agent_collect/i,
+    "Выплаты работают только когда деньги гостей принимает платформа (MONEY_FLOW=agent_collect).",
+  ],
+  [/payout not found/i, "Выплата не найдена. Обновите страницу."],
+  [
+    /payout is \w+, not (draft|approved): nothing was changed/i,
+    "Выплату уже изменил другой оператор. Обновите страницу и проверьте её состояние.",
+  ],
   // shared
   [
     /booking token missing/i,

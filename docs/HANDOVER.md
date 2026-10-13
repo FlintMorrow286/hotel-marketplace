@@ -55,6 +55,9 @@ Double booking невозможен по архитектуре.
   «банка», `/checkout/:id/return` спрашивает результат и ведёт на успех, отказ
   или «Проверить ещё раз». Строка «Тестовая оплата» — только если API говорит
   `payment_test_mode` (`GET /v1/config`)
+- Выплаты: кабинет партнёра «Выплаты» (остаток, брони за ним, перечисления со строками, CSV)
+  и админка «Выплаты» (остатки по партнёрам, черновик → утверждение → отметка с номером
+  платёжки). Правила «когда платить» нет: заглушки `PAYOUT_*` в `app/config/legal.py`
 - Письма: страницы подтверждения, «Моя бронь» и возврата с оплаты обещают письмо только
   при `email_enabled` (`MAIL_BACKEND=smtp`), иначе просят сохранить код брони; в админке
   страница «Письма» (очередь, текст писем log-бэкенда, «Повторить»)
@@ -67,9 +70,9 @@ Double booking невозможен по архитектуре.
 ```bash
 cd /Users/guuu/Desktop/hotel-marketplace
 uv sync --extra bot                           # бэкенд + aiogram (Telegram-бот)
-uv run python -m app.db.migrate               # миграции (1..28)
+uv run python -m app.db.migrate               # миграции (1..29)
 uv run uvicorn app.main:app --port 8002       # API + собранный фронт на :8002
-uv run pytest tests/ -q                       # 796 тестов
+uv run pytest tests/ -q                       # 885 тестов
 uv run ruff check app tests && uv run ruff format app tests
 
 cd web && npm run build                       # пересобрать фронт после правок
@@ -93,7 +96,8 @@ booking: hold (header Idempotency-Key; в теле consent — оферта, П�
 legal: GET /legal → {docs_version}
 payments: POST /payments/notifications/{provider} (подпись провайдера)
 site: GET /config → {payment_test_mode, email_enabled}
-admin: emails (GET очередь писем, POST {id}/retry)
+admin: emails (GET очередь писем, POST {id}/retry), payouts (balances, generate, список, approve/paid/cancel, CSV)
+partner: payouts (summary, pending, список, строки, CSV)
 admin: reports/commission
 healthz, readyz
 
@@ -101,8 +105,8 @@ healthz, readyz
 
 ```
 hotel-marketplace/
-├── migrations/0001..0028*.sql
-├── app/modules/{auth,property,inventory,booking,payment,rate,admin,notification,legal,site}/
+├── migrations/0001..0029*.sql
+├── app/modules/{auth,property,inventory,booking,payment,rate,admin,notification,legal,site,payout}/
 ├── app/{jobs/{reaper,payments,mail}.py, db/{pool,migrate}.py, config/{settings,legal,payment}.py}
 ├── web/src/{pages/{guest,partner}, components/ui, api/}
 ├── tests/   (pytest + pytest-asyncio)
@@ -162,6 +166,12 @@ hotel-marketplace/
   уведомление, возврат гостя; ключей не нужно, `docs/ARCHITECTURE.md` §4.9).
   Настоящий эквайринг = реализация `HostedPaymentProvider`; чек 54-ФЗ не сделан.
   Брони каналов эквайринг не видят (их деньги собрала OTA)
+- Выплаты (`app/modules/payout`, ARCHITECTURE §4.11): строка выплаты — РАЗНИЦА между тем, что бронь
+  приносит партнёру сейчас, и уже включённым в утверждённые/выплаченные выплаты; поэтому бронь платится
+  один раз, а возврат после выплаты приходит минусом в следующую. Только веб-брони. Правила нет —
+  `PAYOUT_*` в `legal.py` (по умолчанию: со дня выезда, без ожидания, без минимума). Модуль не блокирует
+  брони и инвентарь. `commission_status` не трогает. Деньги переводят вне системы; реквизитов партнёров
+  в системе нет
 - Письма: строка в `email_message` пишется в транзакции подтверждения/возврата, отправляет
   джоб `mail` (`docs/ARCHITECTURE.md` §4.10). Пока нет SMTP — `MAIL_BACKEND=log`: ничего не
   уходит, текст писем виден в админке. Письма гостю — только по веб-броням, партнёру — по всем.

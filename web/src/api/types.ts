@@ -234,6 +234,105 @@ export interface PublicConfig {
   email_enabled: boolean;
 }
 
+// ---- payouts ---------------------------------------------------------------
+
+export type PayoutStatus = "draft" | "approved" | "paid" | "cancelled";
+export type PayoutEligibleFrom = "payment" | "checkin" | "checkout";
+
+/** The rule that decides when a booking is payable (placeholders until the business decides). */
+export interface PayoutRule {
+  eligible_from: PayoutEligibleFrom;
+  delay_days: number;
+  min_amount: number;
+  money_flow: string;
+}
+
+/** What a partner is owed in one currency. Amounts are exact to the kopeck. */
+export interface PayoutBalance {
+  partner_id: string;
+  partner_email: string | null;
+  partner_name: string | null;
+  currency: string;
+  /** Payable now and not yet in an approved or paid payout; negative: corrections still to be covered. */
+  available: number;
+  available_bookings: number;
+  /** Earned, not yet payable by the rule. */
+  upcoming: number;
+  upcoming_bookings: number;
+  /** In approved payouts, not yet paid. */
+  approved: number;
+  paid: number;
+  /** The operator's open draft; the partner's own view never has it. */
+  draft?: { id: string; number: number; net_amount: number; line_count: number } | null;
+}
+
+export interface PayoutBalances {
+  rule: PayoutRule;
+  balances: PayoutBalance[];
+}
+
+export interface PayoutOut {
+  id: string;
+  number: number;
+  partner_id: string;
+  partner_email: string;
+  partner_name: string;
+  currency: string;
+  status: PayoutStatus;
+  gross_amount: number;
+  commission_amount: number;
+  net_amount: number;
+  line_count: number;
+  /** The bank's payment reference; set when the payout is paid. */
+  reference: string | null;
+  created_at: string;
+  approved_at: string | null;
+  paid_at: string | null;
+  cancelled_at: string | null;
+  /** Who did it (the operator's id). Only the operator's view has these. */
+  approved_by?: string | null;
+  paid_by?: string | null;
+  cancelled_by?: string | null;
+}
+
+export interface PayoutLine {
+  booking_id: string;
+  code: string;
+  property_name: string;
+  booking_status: BookingStatus;
+  checkin_date: string;
+  checkout_date: string;
+  /** "adjustment": a correction to a booking that was paid out earlier. */
+  kind: "booking" | "adjustment";
+  gross_amount: number;
+  commission_amount: number;
+  net_amount: number;
+}
+
+export interface PayoutDetail extends PayoutOut {
+  lines: PayoutLine[];
+}
+
+export interface PendingBooking {
+  booking_id: string;
+  code: string;
+  booking_status: BookingStatus;
+  currency: string;
+  checkin_date: string;
+  checkout_date: string;
+  payable_from: string | null;
+  state: "available" | "upcoming" | "correction";
+  gross_amount: number;
+  commission_amount: number;
+  net_amount: number;
+}
+
+/** A page of the bookings behind a balance, and how many there are in all. */
+export interface PendingBookings {
+  items: PendingBooking[];
+  total: number;
+}
+
 export type EmailStatus = "queued" | "sent" | "failed" | "skipped";
 
 /** A letter in the queue, as the admin sees it. */

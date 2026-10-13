@@ -70,6 +70,13 @@ def _is_nonpublic_host(host: str | None) -> bool:
     )
 
 
+def _payout_rule_problems() -> list[str]:
+    """The payout rule lives in app.config.legal, not in Settings; a typo there fails at boot."""
+    from app.modules.payout.service import rule_problems
+
+    return rule_problems()
+
+
 def production_problems(s: Settings) -> list[str]:
     """Everything wrong with `s`, all at once.
 
@@ -83,6 +90,8 @@ def production_problems(s: Settings) -> list[str]:
             f"PAYMENT_MODE={s.payment_mode!r} has no implementation; "
             f"use one of {sorted(m.value for m in IMPLEMENTED_PAYMENT_MODES)}"
         )
+
+    problems.extend(_payout_rule_problems())
 
     if s.mail_backend not in MAIL_BACKENDS:
         problems.append(f"MAIL_BACKEND={s.mail_backend!r} is not one of {sorted(MAIL_BACKENDS)}")
