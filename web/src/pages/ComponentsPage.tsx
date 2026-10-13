@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, Info, Star, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
@@ -70,6 +71,14 @@ export function ComponentsPage() {
         </Row>
         <Row label="disabled">
           <Input type="text" placeholder="Поле недоступно" disabled />
+        </Row>
+      </Section>
+
+      <Section title="Checkbox">
+        <Row label="default / checked / disabled">
+          <Checkbox>Принимаю условия публичной оферты</Checkbox>
+          <Checkbox defaultChecked>Даю согласие на обработку персональных данных</Checkbox>
+          <Checkbox disabled>Недоступный пункт</Checkbox>
         </Row>
       </Section>
 

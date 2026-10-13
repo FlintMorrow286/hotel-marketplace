@@ -17,6 +17,7 @@ from starlette.testclient import TestClient
 from app.main import create_app
 from app.modules.booking import service as booking_service
 from app.modules.inventory import service as inventory_service
+from tests._consent import consent
 from tests.test_booking import TODAY, _guest, _seed_unit
 
 HIDDEN = ["draft", "pending_moderation", "blocked"]
@@ -42,6 +43,7 @@ def _hold_body(ut: str) -> dict:
             "email": guest["guest_email"],
             "phone": guest["guest_phone"],
         },
+        "consent": consent(),
     }
 
 

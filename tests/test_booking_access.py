@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 from app.config.settings import settings
 from app.main import create_app
 from app.modules.booking import access
+from tests._consent import consent
 from tests.test_booking import TODAY, _guest, _seed_unit
 
 ACTIONS = ("pay", "cancel", "refund")
@@ -27,6 +28,7 @@ def _hold(client: TestClient, ut: str, guest: dict) -> dict:
                 "email": guest["guest_email"],
                 "phone": guest["guest_phone"],
             },
+            "consent": consent(),
         },
     )
     assert response.status_code == 201, response.text
@@ -132,6 +134,7 @@ async def test_a_replayed_hold_returns_the_same_token(committed_conn) -> None:
             "email": guest["guest_email"],
             "phone": guest["guest_phone"],
         },
+        "consent": consent(),
     }
 
     with TestClient(create_app()) as client:

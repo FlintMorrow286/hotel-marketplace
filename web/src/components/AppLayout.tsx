@@ -2,6 +2,7 @@ import { Link, Outlet, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { getToken, isAdmin, setToken } from "@/api/client";
+import { LEGAL_DOCUMENTS, legalPath } from "@/legal/documents";
 
 export function AppLayout() {
   const navigate = useNavigate();
@@ -58,6 +59,20 @@ export function AppLayout() {
             Админка
           </Link>
         </div>
+        <nav
+          aria-label="Документы"
+          className="mx-auto mt-2 flex max-w-7xl flex-wrap items-center gap-x-5 px-4 sm:px-6 lg:px-8"
+        >
+          {LEGAL_DOCUMENTS.map((doc) => (
+            <Link
+              key={doc.slug}
+              to={legalPath(doc.slug)}
+              className="inline-flex min-h-10 items-center hover:text-text-primary"
+            >
+              {doc.title}
+            </Link>
+          ))}
+        </nav>
       </footer>
     </div>
   );

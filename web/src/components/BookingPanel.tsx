@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { bookings, availability } from "@/api/client";
-import { humanError } from "@/utils/errors";
+import { humanError, isLegalDocsChanged } from "@/utils/errors";
 import { addDays } from "@/utils/date";
 import { formatDate, formatPrice } from "@/utils/format";
 import { plural } from "@/utils/plural";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
+import { useLegalInfo } from "@/hooks/useLegalInfo";
+import { legalPath, type LegalSlug } from "@/legal/documents";
 import type { AvailabilityDay } from "@/api/types";
 interface BookingPanelProps {
   unitTypeId: string;
@@ -18,7 +21,9 @@ interface BookingPanelProps {
 /**
  * Booking panel: pick dates, see per-night availability and total, then place
  * a hold. Hold TTL is 15 minutes; the checkout page counts it down and the
- * payment confirms. The guest never sees the commission.
+ * payment confirms. The guest never sees the commission. Two separate boxes —
+ * the offer and the consent to personal data processing — gate the hold, and the
+ * hold carries the documents version the guest was shown (docs/LEGAL.md §3).
  */
 export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
   const navigate = useNavigate();
@@ -26,6 +31,9 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
   const [checkout, setCheckout] = useState("");
   const [days, setDays] = useState<AvailabilityDay[] | null>(null);
   const [guest, setGuest] = useState({ name: "", email: "", phone: "" });
+  const [acceptedOffer, setAcceptedOffer] = useState(false);
+  const [acceptedPersonalData, setAcceptedPersonalData] = useState(false);
+  const legalInfo = useLegalInfo();
 
   // The API reads a half-open interval [checkin, checkout): a checkout day is
   // not a stay. Sending checkout - 1 collapses a one-night stay to an empty
@@ -36,18 +44,42 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
   });
 
   const hold = useMutation({
-    mutationFn: () =>
-      bookings.hold(
-        { unit_type_id: unitTypeId, checkin, checkout, guest },
+    mutationFn: () => {
+      const docsVersion = legalInfo.data?.docs_version;
+      if (!docsVersion || !acceptedOffer || !acceptedPersonalData) {
+        throw new Error("both consents are required before a hold");
+      }
+      return bookings.hold(
+        {
+          unit_type_id: unitTypeId,
+          checkin,
+          checkout,
+          guest,
+          consent: { docs_version: docsVersion, offer: true, personal_data: true },
+        },
         `hold-${unitTypeId}-${checkin}-${checkout}-${guest.email}`,
-      ),
+      );
+    },
     onSuccess: (data) => navigate(`/checkout/${data.id}`),
+    onError: (error) => {
+      // The text changed under the guest: they read and accept the new one.
+      if (isLegalDocsChanged(error)) {
+        setAcceptedOffer(false);
+        setAcceptedPersonalData(false);
+        void legalInfo.refetch();
+      }
+    },
   });
 
   const total = days ? days.reduce((s, d) => s + (d.price ?? 0), 0) : 0;
   const blocked = days?.some((d) => d.free <= 0 || d.closed) ?? false;
   const guestComplete = Boolean(guest.name && guest.email && guest.phone);
-  const canBook = Boolean(checkin && checkout > checkin && days?.length) && !blocked && guestComplete;
+  const consentGiven = acceptedOffer && acceptedPersonalData && Boolean(legalInfo.data);
+  const canBook =
+    Boolean(checkin && checkout > checkin && days?.length) &&
+    !blocked &&
+    guestComplete &&
+    consentGiven;
 
   function onCheck() {
     if (!checkin || !checkout) return;
@@ -171,6 +203,31 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
         />
       </div>
 
+      <div className="mt-4">
+        <Checkbox
+          checked={acceptedOffer}
+          onChange={(e) => setAcceptedOffer(e.target.checked)}
+        >
+          Принимаю условия <DocLink slug="offer">публичной оферты</DocLink>
+        </Checkbox>
+        <Checkbox
+          checked={acceptedPersonalData}
+          onChange={(e) => setAcceptedPersonalData(e.target.checked)}
+        >
+          Даю{" "}
+          <DocLink slug="personal-data">согласие на обработку персональных данных</DocLink>
+        </Checkbox>
+        <p className="mt-1 text-xs leading-relaxed text-text-tertiary">
+          Как мы обращаемся с данными, написано в{" "}
+          <DocLink slug="privacy">политике конфиденциальности</DocLink>.
+        </p>
+        {legalInfo.isError ? (
+          <p role="alert" className="mt-2 text-sm text-feedback-error-text">
+            Не удалось загрузить условия. Обновите страницу.
+          </p>
+        ) : null}
+      </div>
+
       <div className="mt-6">
         <Button
           onClick={() => hold.mutate()}
@@ -197,9 +254,28 @@ export function BookingPanel({ unitTypeId, currency }: BookingPanelProps) {
           <p className="mt-2 text-center text-xs text-text-tertiary">
             Заполните даты и контакты гостя, чтобы забронировать.
           </p>
+        ) : !consentGiven ? (
+          <p className="mt-2 text-center text-xs text-text-tertiary">
+            Отметьте оба пункта выше, чтобы забронировать.
+          </p>
         ) : null}
       </div>
     </section>
+  );
+}
+
+/** A document link opens in a new tab: the form keeps its dates and contacts. */
+function DocLink({ slug, children }: { slug: LegalSlug; children: ReactNode }) {
+  return (
+    <Link
+      to={legalPath(slug)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-text-link underline underline-offset-[3px] hover:text-text-link-hover"
+    >
+      {children}
+      <span className="sr-only"> (откроется в новой вкладке)</span>
+    </Link>
   );
 }
 

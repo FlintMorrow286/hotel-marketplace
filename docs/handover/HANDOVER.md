@@ -1045,6 +1045,42 @@ submit → карточка брони `BK-7CDYMS` со статусом «По�
 1.5 → 422; чужой rate plan под токеном демо-партнёра → 404. Гейты: 287
 тестов, ruff check/format, `tsc`, `npm run build` — чистые.
 
+## Что сделано в этом срезе: принятие документов перед бронированием
+
+Гость бронировал, не принимая ни оферту, ни согласие на обработку ПД, и в базе не оставалось
+следа, что и когда он принял. С 2025-09-01 согласие на ПД оформляется отдельным документом
+(ст. 9 152-ФЗ в ред. 156-ФЗ), поэтому на форме две галочки, а не одна «согласен с условиями».
+Тексты документов — заглушки, их согласует юрист (`docs/LEGAL.md` §3); это техническая часть, не
+юридическая консультация. Ядро блокировок бронирования не менялось.
+
+- `migrations/0026__booking_docs_consent.sql` — `booking.docs_version` (text) и
+  `docs_accepted_at` (timestamptz): либо обе NULL, либо обе заданы (`booking_docs_consent_pair`).
+  NULL у броней каналов и созданных до миграции, бэкфилла нет.
+- `app/modules/booking/schemas.py` — `Consent{docs_version, offer, personal_data}` обязателен в
+  `HoldRequest`; обе галочки должны быть `true`, иначе 422.
+- `app/modules/booking/routes.py` — до очереди и транзакции сверяет `consent.docs_version` с
+  `legal.LEGAL_DOCS_VERSION`; другая версия — 409 «legal documents changed…». Повтор с тем же
+  Idempotency-Key возвращает прежнюю бронь: версия и время первого принятия не перезаписываются.
+- `app/modules/booking/service.py` — `create_hold(docs_version=…)` пишет версию и момент тем же
+  INSERT, что и сам hold; канал (`channel/service.py`) параметр не передаёт, у него NULL.
+- `app/modules/legal/routes.py` — публичный `GET /v1/legal` → `{docs_version}`.
+- Фронт: `BookingPanel` — две отдельные галочки (`ui/Checkbox`); «Забронировать» ждёт обе и
+  версию из `useLegalInfo`; при 409 «documents changed» галочки снимаются и версия перечитывается.
+  Страницы `/legal/:slug` (`pages/LegalPage`, тексты — `web/src/legal/documents.ts`) и ссылки в
+  футере; ссылки из формы открываются в новой вкладке, чтобы введённое не терялось.
+- Тесты: `tests/test_legal_consent.py` (13 новых), хелпер `tests/_consent.py` в существующих
+  HTTP-тестах hold, `web/e2e/legal-consent.spec.ts`; `load_holds`, `chaos_bookings` и `seed_demo`
+  шлют согласие.
+
+**Что осталось (не техника):** юрист согласует и публикует тексты в `web/src/legal/documents.ts`,
+после чего `LEGAL_DOCS_VERSION` в `app/config/legal.py` поднимается с `2026.09-draft`. Согласие на
+рассылки (email/Telegram) — отдельное, не сделано (`docs/LEGAL.md` §10).
+
+**Живые проверки**: hold без `consent` → 422; со старой версией → 409; с обоими согласиями → 201,
+в БД версия `2026.09-draft` и время принятия; повтор того же ключа вернул ту же бронь. Гейты:
+676 тестов, ruff check, `tsc`, vitest (77), `npm run build`, Playwright (18, chromium + mobile) —
+чистые. E2E локально идёт только с `*_LIMIT_PER_MIN=1000`, как в CI, иначе 429.
+
 ## Бэклог (приоритет — механика сайта)
 
 **Фокус следующих срезов — механика сайта**: гостевой путь, кабинет партнёра,

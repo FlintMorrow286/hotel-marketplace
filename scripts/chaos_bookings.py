@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.config import legal  # noqa: E402
 from app.modules.payment.provider import PaymentProvider, PaymentResult  # noqa: E402
 from scripts.check_invariants import CheckReport, check_dsn  # noqa: E402
 
@@ -222,6 +223,11 @@ class ChaosRunner:
                 "name": f"Chaos guest {guest}",
                 "email": self.data.guest_emails[guest],
                 "phone": "+15550000000",
+            },
+            "consent": {
+                "docs_version": legal.LEGAL_DOCS_VERSION,
+                "offer": True,
+                "personal_data": True,
             },
         }
         key: str | None = None

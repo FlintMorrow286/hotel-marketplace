@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
+from app.config import legal
 from app.config.settings import settings
 from app.db.pool import get_pool
 from app.db.tx import serializable, unit_queue
@@ -88,8 +89,15 @@ async def create_hold(
     """Create a time-limited hold on inventory.
 
     Returns 409 when the dates are not available (including the stop-sell case)
-    or when the idempotency key collides with a different payload.
+    or when the idempotency key collides with a different payload, and 409 when
+    the guest accepted a version of the documents that is no longer the current
+    one. A request without the guest's consent is 422.
     """
+    if data.consent.docs_version != legal.LEGAL_DOCS_VERSION:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="legal documents changed: reload the page and accept the current version",
+        )
     async with unit_queue(get_pool(), data.unit_type_id) as conn:
 
         async def _hold():
@@ -103,6 +111,7 @@ async def create_hold(
                 guest_phone=data.guest.phone,
                 idempotency_key=idempotency_key,
                 published_only=True,
+                docs_version=data.consent.docs_version,
             )
             return row, await _line_dates(conn, row["id"])
 

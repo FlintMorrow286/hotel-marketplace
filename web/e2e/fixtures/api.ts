@@ -139,6 +139,7 @@ export async function createHoldThroughApi(
   request: APIRequestContext,
   fixture: BookingFixture,
 ): Promise<BookingRecord> {
+  const legal = await json<{ docs_version: string }>(await request.get("/v1/legal"));
   return json<BookingRecord>(
     await request.post("/v1/bookings/hold", {
       data: {
@@ -146,13 +147,15 @@ export async function createHoldThroughApi(
         checkin: fixture.dates.checkin,
         checkout: fixture.dates.checkout,
         guest: fixture.guest,
+        consent: { docs_version: legal.docs_version, offer: true, personal_data: true },
       },
     }),
     201,
   );
 }
 
-export async function createHoldThroughUi(page: Page, fixture: BookingFixture): Promise<string> {
+/** The booking form with dates checked and contacts filled, consents not yet ticked. */
+export async function fillBookingForm(page: Page, fixture: BookingFixture): Promise<void> {
   await page.goto(`/property/${fixture.propertyId}`);
   await expect(page.getByRole("heading", { name: fixture.propertyName })).toBeVisible();
   await page.getByLabel("Заезд").fill(fixture.dates.checkin);
@@ -164,6 +167,20 @@ export async function createHoldThroughUi(page: Page, fixture: BookingFixture): 
   await page.getByLabel("Имя").fill(fixture.guest.name);
   await page.getByLabel("Email").fill(fixture.guest.email);
   await page.getByLabel("Телефон").fill(fixture.guest.phone);
+}
+
+export function offerCheckbox(page: Page) {
+  return page.getByRole("checkbox", { name: /публичной оферты/ });
+}
+
+export function personalDataCheckbox(page: Page) {
+  return page.getByRole("checkbox", { name: /согласие на обработку персональных данных/ });
+}
+
+export async function createHoldThroughUi(page: Page, fixture: BookingFixture): Promise<string> {
+  await fillBookingForm(page, fixture);
+  await offerCheckbox(page).check();
+  await personalDataCheckbox(page).check();
   await page.getByRole("button", { name: "Забронировать" }).click();
   await expect(page).toHaveURL(/\/checkout\/[^/]+$/);
   return new URL(page.url()).pathname.split("/").at(-1)!;

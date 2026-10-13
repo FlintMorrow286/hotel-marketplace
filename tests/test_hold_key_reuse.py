@@ -16,6 +16,7 @@ from starlette.testclient import TestClient
 from app.main import create_app
 from app.modules.booking import access
 from app.modules.booking import service as booking_service
+from tests._consent import consent
 from tests.test_booking import TODAY, _guest, _seed_unit
 
 KEY = {"Idempotency-Key": "hold-same-stay"}
@@ -31,6 +32,7 @@ def _body(ut: str, guest: dict) -> dict:
             "email": guest["guest_email"],
             "phone": guest["guest_phone"],
         },
+        "consent": consent(),
     }
 
 

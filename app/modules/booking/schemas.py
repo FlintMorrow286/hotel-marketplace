@@ -16,11 +16,31 @@ class GuestInfo(BaseModel):
     phone: str = Field(min_length=6, max_length=32)
 
 
+class Consent(BaseModel):
+    """What the guest ticked at checkout (docs/LEGAL.md §3).
+
+    Two separate boxes — the offer and the processing of personal data — because the
+    consent to processing may not be folded into another document. `docs_version` is the
+    version of the documents the guest was shown; the route compares it with the current one.
+    """
+
+    docs_version: str = Field(min_length=1, max_length=64)
+    offer: bool
+    personal_data: bool
+
+    @model_validator(mode="after")
+    def _both_given(self) -> Consent:
+        if not (self.offer and self.personal_data):
+            raise ValueError("the offer and the personal data consent must both be accepted")
+        return self
+
+
 class HoldRequest(BaseModel):
     unit_type_id: str
     checkin: dt.date
     checkout: dt.date
     guest: GuestInfo
+    consent: Consent
 
     @model_validator(mode="after")
     def _stay_runs_forward(self) -> HoldRequest:

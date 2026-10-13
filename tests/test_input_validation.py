@@ -21,6 +21,7 @@ from app.modules.auth.schemas import PartnerRegisterRequest
 from app.modules.inventory import service as inventory_service
 from app.modules.property import service as property_service
 from app.modules.property.schemas import PropertyCreate, PropertyUpdate
+from tests._consent import consent
 
 TODAY = dt.date.today()
 
@@ -125,6 +126,7 @@ async def test_a_stay_that_does_not_run_forward_is_422(committed_conn) -> None:
                 "checkin": checkin,
                 "checkout": checkout,
                 "guest": {"name": "Иван", "email": "ivan@example.com", "phone": "+79991234567"},
+                "consent": consent(),
             },
         )
 

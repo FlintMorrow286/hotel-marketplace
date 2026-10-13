@@ -140,12 +140,15 @@ async def create_hold(
     idempotency_key: str | None = None,
     origin: str = "web",
     published_only: bool = False,
+    docs_version: str | None = None,
 ) -> dict:
     """Reserve inventory for the stay and return the new hold booking.
 
     Raises NotAvailable when there is no free inventory, Conflict when the
     idempotency key is reused with different request data. `published_only` is
     the public API's view: a property the catalog does not show takes no booking.
+    `docs_version` is the version of the public documents the guest accepted; it is
+    stored with the moment of acceptance. A channel booking has none.
 
     The caller is responsible for the transaction; tests wrap this in a
     rolled-back transaction, the route wraps it in a committed one.
@@ -252,9 +255,10 @@ async def create_hold(
             (code, idempotency_key, property_id, unit_type_id,
              guest_name, guest_email, guest_phone,
              checkin_date, checkout_date, status, origin,
-             total_amount, commission_rate, commission_amt, hold_expires_at)
+             total_amount, commission_rate, commission_amt, hold_expires_at,
+             docs_version, docs_accepted_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'hold', $14,
-                $10, $11, $12, $13)
+                $10, $11, $12, $13, $15, $16)
         RETURNING id::text, code, status, total_amount, hold_expires_at
         """,
         code,
@@ -271,6 +275,8 @@ async def create_hold(
         commission,
         hold_expires_at,
         origin,
+        docs_version,
+        dt.datetime.now(dt.UTC) if docs_version else None,
     )
     assert row is not None
 

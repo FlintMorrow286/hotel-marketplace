@@ -128,6 +128,7 @@ def create_app() -> FastAPI:
     from app.modules.bot.routes import router as bot_router
     from app.modules.channel.routes import router as channel_router
     from app.modules.inventory.routes import router as inventory_router
+    from app.modules.legal.routes import router as legal_router
     from app.modules.outbox.routes import router as outbox_router
     from app.modules.payment.routes import router as payment_router
     from app.modules.property.photo_routes import router as photo_router
@@ -143,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(unit_type_router)
     app.include_router(inventory_router)
     app.include_router(booking_router)
+    app.include_router(legal_router)
     app.include_router(payment_router)
     app.include_router(rate_router)
     app.include_router(admin_router)

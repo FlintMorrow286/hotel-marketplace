@@ -23,6 +23,7 @@ import asyncpg
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from app.config import legal  # noqa: E402
 from app.config.settings import settings  # noqa: E402
 from app.db.pool import close_pool, init_pool  # noqa: E402
 from app.utils.logger import get_logger  # noqa: E402
@@ -172,6 +173,7 @@ async def _seed_bookings(conn: asyncpg.Connection, partner_id: str) -> None:
                 guest_email=f"demo-{room_no}@example.com",
                 guest_phone="+79990000000",
                 idempotency_key=idem,
+                docs_version=legal.LEGAL_DOCS_VERSION,
             )
         await payment_service.pay_and_confirm(hold["id"], conn=conn)
         seeded += 1

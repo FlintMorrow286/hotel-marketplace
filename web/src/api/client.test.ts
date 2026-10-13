@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiException, bookings } from "./client";
+import { ApiException, bookings, legal } from "./client";
 
 class MemoryStorage {
   private data = new Map<string, string>();
@@ -20,6 +20,7 @@ const HOLD = {
   checkin: "2030-01-10",
   checkout: "2030-01-12",
   guest: { name: "Иван Гость", email: "guest@example.com", phone: "+79991234567" },
+  consent: { docs_version: "2026.09-draft", offer: true, personal_data: true } as const,
 };
 
 function booking(id: string, token?: string) {
@@ -70,6 +71,28 @@ describe("the booking access token", () => {
     await bookings.hold(HOLD, "key-1");
 
     expect(session.getItem("booking-token:b1")).toBe("tok-1");
+  });
+
+  it("carries the guest's consent and the documents version in the hold body", async () => {
+    fetchMock.mockResolvedValueOnce(reply(booking("b1", "tok-1"), 201));
+
+    await bookings.hold(HOLD, "key-1");
+
+    const { url, init } = lastRequest();
+    expect(url).toBe("/v1/bookings/hold");
+    expect(JSON.parse(init.body as string).consent).toEqual({
+      docs_version: "2026.09-draft",
+      offer: true,
+      personal_data: true,
+    });
+  });
+
+  it("reads the current documents version from /v1/legal", async () => {
+    fetchMock.mockResolvedValueOnce(reply({ docs_version: "2026.09-draft" }));
+
+    await expect(legal.get()).resolves.toEqual({ docs_version: "2026.09-draft" });
+
+    expect(lastRequest().url).toBe("/v1/legal");
   });
 
   it("is kept when a booking is found by code and email", async () => {

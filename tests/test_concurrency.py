@@ -26,6 +26,7 @@ from app.modules.payment import service as payment_service
 from app.modules.payment.provider import StubProvider
 from app.modules.property import service as property_service
 from app.modules.property.schemas import PropertyCreate
+from tests._consent import consent
 
 TODAY = dt.date.today()
 CHECKIN = TODAY + dt.timedelta(days=10)
@@ -73,6 +74,7 @@ def _hold_body(unit_type_id: str, i: int = 0) -> dict:
         "checkin": CHECKIN.isoformat(),
         "checkout": CHECKOUT.isoformat(),
         "guest": {"name": f"Гость {i}", "email": f"guest{i}@example.com", "phone": "+79991234567"},
+        "consent": consent(),
     }
 
 

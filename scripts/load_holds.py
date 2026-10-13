@@ -29,6 +29,7 @@ import httpx
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from app.config import legal  # noqa: E402
 from app.config.settings import settings  # noqa: E402
 from app.modules.auth import service as auth_service  # noqa: E402
 from app.modules.auth.schemas import PartnerRegisterRequest  # noqa: E402
@@ -105,6 +106,7 @@ async def _one(
             "email": f"guest{i}-{uuid.uuid4().hex[:6]}@example.com",
             "phone": "+79991234567",
         },
+        "consent": {"docs_version": legal.LEGAL_DOCS_VERSION, "offer": True, "personal_data": True},
     }
     started = time.perf_counter()
     response = await client.post(

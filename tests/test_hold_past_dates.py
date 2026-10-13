@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 from app.main import create_app
 from app.modules.booking import service as booking_service
 from app.utils.tz import today_at
+from tests._consent import consent
 from tests.test_booking import TODAY, _guest, _seed_unit
 
 AHEAD = "Pacific/Kiritimati"  # UTC+14
@@ -118,6 +119,7 @@ async def test_the_api_answers_409_and_touches_no_inventory(committed_conn) -> N
                     "email": guest["guest_email"],
                     "phone": guest["guest_phone"],
                 },
+                "consent": consent(),
             },
         )
 

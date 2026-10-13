@@ -47,7 +47,10 @@ Double booking невозможен по архитектуре.
   модалка создания объекта. Пустое состояние объясняет ценность, один доминантный CTA
 - Фото объектов: multipart-загрузка в кабинете (full + thumb WebP), обложка в
   каталоге и на странице объекта, удаление
-- Базовые компоненты: Button, Input, Badge, Modal
+- Базовые компоненты: Button, Input, Badge, Modal, Checkbox
+- Панель бронирования: две отдельные галочки (оферта и согласие на обработку ПД)
+  со ссылками на документы в новой вкладке, страницы `/legal/:slug` (тексты —
+  заглушки до юриста) и ссылки на них в футере
 - Тёмная тема следует `prefers-color-scheme`
 - Каталог и шахматка берут реальные данные из API (rate plan + сезонные цены
   показываются в шахматке корректно)
@@ -57,9 +60,9 @@ Double booking невозможен по архитектуре.
 ```bash
 cd /Users/guuu/Desktop/hotel-marketplace
 uv sync --extra bot                           # бэкенд + aiogram (Telegram-бот)
-uv run python -m app.db.migrate               # миграции (1..21)
+uv run python -m app.db.migrate               # миграции (1..26)
 uv run uvicorn app.main:app --port 8002       # API + собранный фронт на :8002
-uv run pytest tests/ -q                       # 192 теста
+uv run pytest tests/ -q                       # 676 тестов
 uv run ruff check app tests && uv run ruff format app tests
 
 cd web && npm run build                       # пересобрать фронт после правок
@@ -78,7 +81,9 @@ partner: properties (GET/POST/PATCH), unit-types (POST, GET by property),
 inventory/generate, inventory/close, rate-plans (POST/GET), prices (POST),
 calendar (GET)
 public: properties (GET list/detail), availability
-booking: hold (header Idempotency-Key), GET/{id}, cancel, pay, refund
+booking: hold (header Idempotency-Key; в теле consent — оферта, ПД, версия
+документов), GET/{id}, cancel, pay, refund
+legal: GET /legal → {docs_version}
 admin: reports/commission
 healthz, readyz
 
@@ -86,8 +91,8 @@ healthz, readyz
 
 ```
 hotel-marketplace/
-├── migrations/0001..0008*.sql
-├── app/modules/{auth,property,inventory,booking,payment,rate,admin,notification}/
+├── migrations/0001..0026*.sql
+├── app/modules/{auth,property,inventory,booking,payment,rate,admin,notification,legal}/
 ├── app/{jobs/reaper.py, db/{pool,migrate}.py, config/{settings,legal,payment}.py}
 ├── web/src/{pages/{guest,partner}, components/ui, api/}
 ├── tests/   (pytest + pytest-asyncio)
@@ -138,6 +143,11 @@ hotel-marketplace/
 
 - Юр/налоги — `docs/LEGAL.md` (паркинг для юриста), в коде константы
   `app/config/legal.py`. Отвечаю только за технику
+- Документы перед бронированием: hold без обоих согласий (оферта, ПД) — 422, с
+  не текущей `LEGAL_DOCS_VERSION` — 409; версия и время пишутся в
+  `booking.docs_version/docs_accepted_at`, у броней каналов NULL. Версию менять
+  при любой правке текстов (`web/src/legal/documents.ts` — пока заглушки).
+  В тестах тело согласия — `tests/_consent.py`
 - Оплата — заглушка `PAYMENT_MODE=stub`; реальный эквайринг = реализация того
   же интерфейса `PaymentProvider`
 - Часовой пояс Крыма — `Europe/Simferopol` (не Asia)

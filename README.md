@@ -147,7 +147,8 @@ cd web && npm ci && npm test && npm run typecheck   # vitest + типы
 # нагрузка на горячий путь (сервер уже запущен на APP_PORT):
 uv run python scripts/load_holds.py --n 100 --units 1     # 1 x 201, 99 x 409
 uv run python scripts/load_holds.py --n 100 --units 100   # 100 x 201 на одних и тех же строках
-# e2e гостевого пути в браузере: web/playwright.config.ts, `npm run e2e` (см. job `e2e` в CI)
+# e2e гостевого пути в браузере: web/playwright.config.ts, `npm run e2e` (см. job `e2e` в CI);
+# API для него поднимайте с *_LIMIT_PER_MIN=1000, как в CI, иначе rate limit даст 429
 ```
 
 `scripts/load_holds.py` сам создаёт и убирает тестовый номер и завершается с кодом 1,
@@ -165,6 +166,11 @@ uv run python scripts/load_holds.py --n 100 --units 100   # 100 x 201 на од�
 
 Технически они оформлены как **константы-заглушки** в `app/config/legal.py`
 и **не блокируют разработку ядра**.
+
+Уже работает в коде принятие документов перед бронированием: гость отдельно отмечает оферту и
+согласие на обработку ПД, `POST /v1/bookings/hold` без них — 422, а с устаревшей
+`LEGAL_DOCS_VERSION` — 409; принятая версия и время пишутся в бронь (`docs/LEGAL.md` §3).
+Тексты документов на сайте — заглушки до согласования с юристом.
 
 ---
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ApiException } from "@/api/client";
-import { humanError, isTooManyAttempts, TOO_MANY_ATTEMPTS } from "./errors";
+import {
+  humanError,
+  isLegalDocsChanged,
+  isTooManyAttempts,
+  TOO_MANY_ATTEMPTS,
+} from "./errors";
 
 const knownErrors = [
   {
@@ -22,6 +27,10 @@ const knownErrors = [
   {
     detail: "not holdable",
     message: "Эта бронь больше не активна. Оформите её заново.",
+  },
+  {
+    detail: "legal documents changed: reload the page and accept the current version",
+    message: "Условия обновились. Ознакомьтесь с ними и подтвердите согласие заново.",
   },
   {
     detail: "payment failed",
@@ -112,5 +121,19 @@ describe("isTooManyAttempts", () => {
 
   it("exposes the guest-facing retry message", () => {
     expect(TOO_MANY_ATTEMPTS).toBe("Слишком много попыток. Подождите минуту и попробуйте снова.");
+  });
+});
+
+describe("isLegalDocsChanged", () => {
+  const detail = "legal documents changed: reload the page and accept the current version";
+
+  it("recognizes the 409 that asks the guest to accept the documents again", () => {
+    expect(isLegalDocsChanged(new ApiException(409, detail))).toBe(true);
+  });
+
+  it("ignores other conflicts, other statuses and non-API errors", () => {
+    expect(isLegalDocsChanged(new ApiException(409, "dates not available: no free inventory"))).toBe(false);
+    expect(isLegalDocsChanged(new ApiException(422, detail))).toBe(false);
+    expect(isLegalDocsChanged(new Error(detail))).toBe(false);
   });
 });

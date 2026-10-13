@@ -16,6 +16,7 @@ import type {
   CommissionReport,
   IcalFeed,
   IcalSubscription,
+  LegalInfo,
   OutboxEvent,
   OutboxMetrics,
   RatePlan,
@@ -171,6 +172,13 @@ export const auth = {
       body: { email, password },
     }),
   me: () => request<AuthMe>("/auth/me"),
+};
+
+// ---- legal ----------------------------------------------------------------
+
+export const legal = {
+  /** The version of the documents a guest accepts; the hold must carry it back. */
+  get: (signal?: AbortSignal) => request<LegalInfo>("/legal", { signal }),
 };
 
 // ---- public catalog -------------------------------------------------------

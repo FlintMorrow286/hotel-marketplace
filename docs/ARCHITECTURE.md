@@ -238,8 +238,11 @@ CREATE TABLE booking (
   paid_at         timestamptz,
   cancelled_at    timestamptz,
   cancel_deadline timestamptz,                     -- бесплатная отмена до этого момента (24:00 пред.дня)
+  docs_version    text,                            -- версия оферты и согласия на ПД, принятая гостем; NULL у каналов
+  docs_accepted_at timestamptz,                    -- когда принята; задана тогда и только тогда, когда задана docs_version
   created_at      timestamptz NOT NULL DEFAULT now(),
-  CHECK (checkout_date > checkin_date)
+  CHECK (checkout_date > checkin_date),
+  CONSTRAINT booking_docs_consent_pair CHECK ((docs_version IS NULL) = (docs_accepted_at IS NULL))
 );
 
 CREATE TABLE booking_line (
@@ -481,7 +484,8 @@ POST /bookings/hold (idempotency-key: <uuid> от клиента)
 | GET | `/properties/{id}` | public | Карточка + first available dates |
 | GET | `/availability` | public | `unit_type_id`, `from`, `to` → массив `{date, available, price, closed, min_stay}` |
 | GET | `/rate-plans/{id}/prices` | public | Цены по дням |
-| POST | `/bookings/hold` | guest | Body: `unit_type_id, checkin, checkout, guest{...}`; Header: `Idempotency-Key` → `booking` status=hold + `hold_expires_at` + `access_token` |
+| GET | `/legal` | public | `{docs_version}` — текущая версия оферты и согласия на ПД; клиент отдаёт её назад в `consent.docs_version` |
+| POST | `/bookings/hold` | guest | Body: `unit_type_id, checkin, checkout, guest{...}, consent{docs_version, offer, personal_data}`; Header: `Idempotency-Key` → `booking` status=hold + `hold_expires_at` + `access_token`. Без обоих согласий — 422, с неактуальной `docs_version` — 409 |
 | POST | `/bookings/lookup` | guest | `{code, email}` → бронь + `access_token`; код без email ничего не отдаёт |
 | POST | `/bookings/{id}/confirm` | guest | Подтверждение (manual flow: «оплатить позже»/счёт) или триггер эквайринга |
 | POST | `/bookings/{id}/pay` | guest + `X-Booking-Token` | **Phase 1 — заглушка**: `PAYMENT_MODE=stub` мгновенно `succeeded` → `confirmed`. Потом — старт платёжной сессии эквайринга |
@@ -539,7 +543,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [unit_type_id, checkin, checkout, guest]
+              required: [unit_type_id, checkin, checkout, guest, consent]
               properties:
                 unit_type_id: { type: string, format: uuid }
                 checkin:  { type: string, format: date }
@@ -551,6 +555,13 @@ paths:
                     name:  { type: string }
                     email: { type: string, format: email }
                     phone: { type: string }
+                consent:                  # два отдельных согласия, docs/LEGAL.md §3
+                  type: object
+                  required: [docs_version, offer, personal_data]
+                  properties:
+                    docs_version: { type: string, description: "версия из GET /v1/legal" }
+                    offer:         { type: boolean, enum: [true] }
+                    personal_data: { type: boolean, enum: [true] }
       responses:
         '201':
           description: Hold создан
@@ -572,9 +583,9 @@ paths:
                         price: { type: number }
                   total_amount:    { type: number }
         '409':
-          description: Нет доступности на запрошенный диапазон
+          description: Нет доступности на запрошенный диапазон либо docs_version уже не текущая (страницу перезагрузить и принять документы заново)
         '422':
-          description: Нарушены restrictions (min_stay, CTA/CTD, stop sell)
+          description: Нарушены restrictions (min_stay, CTA/CTD, stop sell) либо не отмечены оба согласия
         '409-DUP':
           description: (по тому же Idempotency-Key) — вернуть ранее созданный hold
 ```

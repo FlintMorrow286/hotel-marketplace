@@ -16,6 +16,10 @@ const MESSAGES: ReadonlyArray<[RegExp, string]> = [
   [/idempotency conflict/i, "Это бронирование уже оформляется. Обновите страницу."],
   [/hold expired/i, "Время бронирования истекло — оформите его заново."],
   [/not holdable/i, "Эта бронь больше не активна. Оформите её заново."],
+  [
+    /legal documents changed/i,
+    "Условия обновились. Ознакомьтесь с ними и подтвердите согласие заново.",
+  ],
   // payment
   [
     /your payment was returned/i,
@@ -68,6 +72,15 @@ export const TOO_MANY_ATTEMPTS =
 
 export function isTooManyAttempts(exc: unknown): boolean {
   return exc instanceof ApiException && exc.status === 429;
+}
+
+/** The documents changed while the guest filled the form: they must accept again. */
+export function isLegalDocsChanged(exc: unknown): boolean {
+  return (
+    exc instanceof ApiException &&
+    exc.status === 409 &&
+    /legal documents changed/i.test(exc.message)
+  );
 }
 
 export function humanError(exc: unknown, fallback: string): string {

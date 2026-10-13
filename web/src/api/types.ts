@@ -178,6 +178,22 @@ export interface HoldRequest {
   checkin: string; // ISO date "YYYY-MM-DD"
   checkout: string; // ISO date "YYYY-MM-DD"
   guest: GuestInfo;
+  consent: HoldConsent;
+}
+
+/**
+ * What the guest ticked at checkout: the offer and, as a separate box, the
+ * processing of personal data. `docs_version` is the version the guest was shown
+ * (GET /v1/legal); the API refuses any other.
+ */
+export interface HoldConsent {
+  docs_version: string;
+  offer: true;
+  personal_data: true;
+}
+
+export interface LegalInfo {
+  docs_version: string;
 }
 
 export interface BookingLineOut {
