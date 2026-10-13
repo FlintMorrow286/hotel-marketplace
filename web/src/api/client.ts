@@ -19,13 +19,14 @@ import type {
   LegalInfo,
   OutboxEvent,
   OutboxMetrics,
-  PaymentConfig,
+  PublicConfig,
   PaymentRedirect,
   PaymentSync,
   RatePlan,
   ReconciliationReport,
   SyncResult,
   WebhookOut,
+  AdminEmailList,
   AdminProperty,
   AdminPropertyStatus,
   HoldConflict,
@@ -184,11 +185,11 @@ export const legal = {
   get: (signal?: AbortSignal) => request<LegalInfo>("/legal", { signal }),
 };
 
-// ---- payments -------------------------------------------------------------
+// ---- site -----------------------------------------------------------------
 
-export const payments = {
-  /** Whether anybody is really charged: the checkout says so only when nobody is. */
-  config: (signal?: AbortSignal) => request<PaymentConfig>("/payments/config", { signal }),
+export const site = {
+  /** What the pages may promise: a test payment, a letter. Nothing is claimed before it is known. */
+  config: (signal?: AbortSignal) => request<PublicConfig>("/config", { signal }),
 };
 
 // ---- public catalog -------------------------------------------------------
@@ -372,6 +373,14 @@ export const admin = {
       `/admin/outbox/${eventId}/retry`,
       { method: "POST" },
     ),
+  emails: (status: string | null, signal?: AbortSignal) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return request<AdminEmailList>(`/admin/emails${qs}`, { signal });
+  },
+  retryEmail: (emailId: string) =>
+    request<{ retried: string; kind: string }>(`/admin/emails/${emailId}/retry`, {
+      method: "POST",
+    }),
 };
 
 export const partner = {

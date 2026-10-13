@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { CancelBooking } from "@/components/CancelBooking";
 import { useCountdown, formatCountdown } from "@/hooks/useCountdown";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
-import { usePaymentConfig } from "@/hooks/usePaymentConfig";
+import { usePublicConfig } from "@/hooks/usePublicConfig";
 
 export function CheckoutPage() {
   useDocumentTitle("Оплата брони");
@@ -26,7 +26,7 @@ export function CheckoutPage() {
     refetchInterval: 30_000,
   });
 
-  const paymentConfig = usePaymentConfig();
+  const config = usePublicConfig();
   // The browser is on its way to the payment page: the button stays down until it leaves.
   const [redirecting, setRedirecting] = useState(false);
 
@@ -117,7 +117,7 @@ export function CheckoutPage() {
       </h1>
       <p className="mt-2 font-mono text-sm text-text-tertiary">{booking.code}</p>
 
-      {isConfirmed ? <ConfirmedState /> : null}
+      {isConfirmed ? <ConfirmedState emailEnabled={config.data?.email_enabled === true} /> : null}
       {lapsed ? <LapsedState code={booking.code} /> : null}
 
       <section className="mt-10 rounded-xl border border-border-default bg-surface-card p-8">
@@ -182,7 +182,7 @@ export function CheckoutPage() {
           <p className="mt-4 text-center text-xs leading-relaxed text-text-tertiary">
             100% предоплата. Отмена бесплатна за сутки до заезда.
           </p>
-          {paymentConfig.data?.test_mode ? (
+          {config.data?.payment_test_mode ? (
             <p className="mt-2 text-center text-xs text-text-tertiary">
               Тестовая оплата, деньги не списываются.
             </p>
@@ -213,12 +213,15 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-function ConfirmedState() {
+function ConfirmedState({ emailEnabled }: { emailEnabled: boolean }) {
   return (
     <div className="mt-8 border border-border-default bg-feedback-success-bg p-5 text-feedback-success-text">
       <p className="font-medium">Бронь подтверждена</p>
       <p className="mt-2 text-sm">
-        Мгновенное подтверждение. Данные отправлены на почту.
+        Мгновенное подтверждение.{" "}
+        {emailEnabled
+          ? "Детали брони придут на вашу почту."
+          : "Сохраните код брони: по нему и email бронь можно найти на странице «Моя бронь»."}
       </p>
     </div>
   );

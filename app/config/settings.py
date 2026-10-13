@@ -8,7 +8,7 @@ import os
 import urllib.parse
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -164,6 +164,30 @@ class Settings(BaseSettings):
     # ----- Payment -----
     payment_mode: str = Field(default="stub")
 
+    # ----- Mail -----
+    # log:  render every message and keep it in email_message, deliver nothing. For development
+    #       and for a deployment that has no mail account yet.
+    # smtp: deliver through the server below.
+    mail_backend: str = Field(default="log")
+    mail_from: str = Field(default="Бронирование <no-reply@localhost>")
+    # Where a guest's reply goes. Empty: the letters say that nobody reads replies.
+    mail_reply_to: str = Field(default="")
+    smtp_host: str = Field(default="")
+    smtp_port: int = Field(default=587)
+    smtp_user: str = Field(default="")
+    smtp_password: str = Field(default="")
+    # STARTTLS upgrades a plain connection (port 587); SSL is TLS from the first byte (port 465).
+    smtp_starttls: bool = Field(default=True)
+    smtp_ssl: bool = Field(default=False)
+    smtp_timeout_sec: float = Field(default=20.0)
+    # The sender's cadence, and how many times a letter is tried before it is given up on.
+    mail_poll_interval_sec: float = Field(default=5.0)
+    mail_max_attempts: int = Field(default=8)
+    # A kept letter holds a recipient's address, so it is deleted after this many days; the failed
+    # ones are kept longer, for an operator to see what never went out.
+    mail_sent_retention_days: int = Field(default=30)
+    mail_failed_retention_days: int = Field(default=180)
+
     # ----- Property photos -----
     # Partners upload photos through the cabinet; the catalog renders them.
     # Files live outside web/ (never copied into public/) and are served from
@@ -194,6 +218,14 @@ class Settings(BaseSettings):
     def _blank_api_docs_is_unset(cls, value: object) -> object:
         # Compose passes API_DOCS through even when the operator never set it.
         return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("smtp_port", "smtp_starttls", "smtp_ssl", mode="before")
+    @classmethod
+    def _blank_mail_setting_is_the_default(cls, value: object, info: ValidationInfo) -> object:
+        # Compose passes a key through as an empty string when .env names it without a value.
+        if isinstance(value, str) and not value.strip():
+            return cls.model_fields[info.field_name].default
+        return value
 
     @property
     def is_dev(self) -> bool:

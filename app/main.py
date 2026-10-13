@@ -30,6 +30,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     check_config(settings)
     log.info("startup", env=settings.app_env, port=settings.app_port)
+    if not settings.is_dev and settings.mail_backend == "log":
+        log.warning(
+            "email-not-delivered-outside-dev",
+            hint="letters are kept in the email_message table and sent to nobody; "
+            "set MAIL_BACKEND=smtp and SMTP_HOST",
+        )
     if not settings.is_dev and settings.payment_mode in {"stub", "mock_acquiring"}:
         log.warning(
             "payment-stub-outside-dev",
@@ -70,6 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     background_tasks: list[asyncio.Task] = []
     if settings.run_background_jobs:
+        from app.jobs.mail import mail_loop
         from app.jobs.payments import reconcile_loop
         from app.jobs.reaper import reaper_loop
         from app.modules.bot import bot_loop
@@ -80,6 +87,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         background_tasks = [
             asyncio.create_task(reaper_loop()),
             asyncio.create_task(reconcile_loop()),
+            asyncio.create_task(mail_loop()),
             asyncio.create_task(import_loop()),
             *(asyncio.create_task(outbox_loop(group)) for group in shard_groups()),
             asyncio.create_task(retention_loop()),
@@ -132,6 +140,7 @@ def create_app() -> FastAPI:
     from app.modules.channel.routes import router as channel_router
     from app.modules.inventory.routes import router as inventory_router
     from app.modules.legal.routes import router as legal_router
+    from app.modules.notification.routes import router as notification_router
     from app.modules.outbox.routes import router as outbox_router
     from app.modules.payment.mock_acquirer import router as mock_acquirer_router
     from app.modules.payment.routes import payments_router
@@ -140,6 +149,7 @@ def create_app() -> FastAPI:
     from app.modules.property.routes import router as property_router
     from app.modules.property.unit_type_routes import router as unit_type_router
     from app.modules.rate.routes import router as rate_router
+    from app.modules.site.routes import router as site_router
     from app.modules.sync.routes import router as sync_router
 
     app.include_router(auth_router)
@@ -150,6 +160,8 @@ def create_app() -> FastAPI:
     app.include_router(inventory_router)
     app.include_router(booking_router)
     app.include_router(legal_router)
+    app.include_router(site_router)
+    app.include_router(notification_router)
     app.include_router(payment_router)
     app.include_router(payments_router)
     app.include_router(mock_acquirer_router)

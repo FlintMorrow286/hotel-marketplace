@@ -226,9 +226,42 @@ export interface PaymentSync {
   booking: BookingOut | null;
 }
 
-export interface PaymentConfig {
+/** What the pages may promise the guest (GET /v1/config). */
+export interface PublicConfig {
   /** True while nobody is really charged (stub or mock provider). */
-  test_mode: boolean;
+  payment_test_mode: boolean;
+  /** True when letters are really delivered; otherwise no page may promise one. */
+  email_enabled: boolean;
+}
+
+export type EmailStatus = "queued" | "sent" | "failed" | "skipped";
+
+/** A letter in the queue, as the admin sees it. */
+export interface AdminEmail {
+  id: string;
+  kind:
+    | "guest_booking_confirmed"
+    | "partner_booking_confirmed"
+    | "guest_booking_cancelled"
+    | "partner_booking_cancelled";
+  booking_id: string;
+  booking_code: string | null;
+  to_email: string | null;
+  subject: string | null;
+  /** Kept only for letters the log backend did not deliver. */
+  body: string | null;
+  delivery: "log" | "smtp" | null;
+  status: EmailStatus;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export interface AdminEmailList {
+  backend: "log" | "smtp";
+  counts: Record<EmailStatus, number>;
+  items: AdminEmail[];
 }
 
 export interface BookingLineOut {

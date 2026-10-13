@@ -22,7 +22,9 @@ from app.config import legal
 from app.config.settings import settings
 from app.db.pool import get_pool
 from app.db.tx import serializable, try_lock, unlock
+from app.modules.booking.cancellation import free_cancellation_last_day
 from app.modules.booking.service import BookingError, release_hold
+from app.modules.notification import email as email_queue
 from app.modules.payment.provider import (
     HostedPaymentProvider,
     NotificationError,
@@ -147,6 +149,8 @@ async def _confirm_hold(
         },
         property_id=row["property_id"],
     )
+    # The letters, same transaction: a confirmed booking never lacks them.
+    await email_queue.enqueue_booking_mail(conn, booking_id, "confirmed", origin=booking["origin"])
 
     return await _row_to_out(row, lines), row
 
@@ -369,9 +373,7 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
             raise PaymentError(f"cannot refund booking with status={booking['status']}")
         provider = await _provider_of_charge(conn, booking_id, _provider_for(booking["origin"]))
 
-        deadline = booking["checkin_date"] - dt.timedelta(
-            hours=legal.CANCELLATION_FREE_BEFORE_HOURS
-        )
+        deadline = free_cancellation_last_day(booking["checkin_date"])
         earlier = await _refund_on_record(conn, booking_id)
         if earlier is not None:
             amount = earlier["amount"]
@@ -476,6 +478,9 @@ async def refund_booking(booking_id: str, conn: asyncpg.Connection | None = None
                     "free_cancelled": is_free,
                 },
                 property_id=booking["property_id"],
+            )
+            await email_queue.enqueue_booking_mail(
+                conn, booking_id, "cancelled", origin=booking["origin"]
             )
             lines = await conn.fetch(
                 "SELECT date, price::float8 FROM booking_line WHERE booking_id = $1 ORDER BY date",

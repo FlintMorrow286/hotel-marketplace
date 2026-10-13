@@ -1,12 +1,9 @@
 """Notifications.
 
-Phase 1 keeps delivery deliberately simple:
-  - email: via SMTP or a single provider (configure later); right now the
-    message is only logged so the flow is testable end-to-end without a
-    mailbox.
-  - Telegram: aiogram 3 bot to the partner, when TELEGRAM_BOT_TOKEN is set.
-
-Both are best-effort: a notification failure must never break a booking.
+- email: a durable queue written with the booking change, delivered by a job
+  (app/modules/notification/email.py).
+- Telegram: aiogram 3 bot to the partner, when TELEGRAM_BOT_TOKEN is set. Best-effort, after
+  the commit: a notification failure must never break a booking.
 """
 
 from __future__ import annotations
@@ -57,14 +54,6 @@ async def notify_booking_confirmed(conn: asyncpg.Connection, booking: dict) -> N
         checkout=booking.get("checkout_date"),
         total=booking.get("total_amount"),
         commission=booking.get("commission_amt"),
-    )
-
-    # email (logged until SMTP/provider is wired)
-    log.info(
-        "notify-email",
-        to=booking.get("guest_email"),
-        partner_id=str(partner_id),
-        subject=f"Бронь {booking.get('code')} подтверждена",
     )
 
     # telegram

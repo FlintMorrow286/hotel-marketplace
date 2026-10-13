@@ -6,6 +6,7 @@ import { bookings } from "@/api/client";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { usePublicConfig } from "@/hooks/usePublicConfig";
 import { isTooManyAttempts, TOO_MANY_ATTEMPTS } from "@/utils/errors";
 import { formatDate, formatPrice } from "@/utils/format";
 
@@ -29,6 +30,7 @@ export function MyBookingPage() {
   const navigate = useNavigate();
   const [code, setCode] = useState("");
   const [email, setEmail] = useState("");
+  const emailEnabled = usePublicConfig().data?.email_enabled === true;
 
   const lookup = useMutation({
     mutationFn: () => bookings.lookup(code.trim().toUpperCase(), email.trim()),
@@ -52,7 +54,8 @@ export function MyBookingPage() {
       </h1>
       <p className="mt-4 text-text-secondary">
         Введите код брони и email, указанный при бронировании. Код начинается на
-        «BK» и есть в письме подтверждения.
+        «BK»{" "}
+        {emailEnabled ? "и есть в письме подтверждения." : "и показан на странице подтверждения брони."}
       </p>
 
       <form

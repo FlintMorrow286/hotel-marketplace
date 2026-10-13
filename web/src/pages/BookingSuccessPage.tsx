@@ -6,12 +6,14 @@ import type { BookingOut } from "@/api/types";
 import { Button } from "@/components/ui/Button";
 import { CancelBooking } from "@/components/CancelBooking";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { usePublicConfig } from "@/hooks/usePublicConfig";
 
 export function BookingSuccessPage() {
   useDocumentTitle("Бронь подтверждена");
   const { bookingId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const emailEnabled = usePublicConfig().data?.email_enabled === true;
   const { data: booking } = useQuery({
     queryKey: ["booking", bookingId],
     queryFn: ({ signal }) => bookings.get(bookingId as string, signal),
@@ -41,7 +43,10 @@ export function BookingSuccessPage() {
         Бронь подтверждена
       </h1>
       <p className="mt-6 text-lg leading-normal text-text-secondary">
-        Мгновенное подтверждение. Мы отправили детали на вашу почту.
+        Мгновенное подтверждение.{" "}
+        {emailEnabled
+          ? "Детали брони придут на вашу почту."
+          : "Сохраните код брони: по нему и email бронь можно найти на странице «Моя бронь»."}
       </p>
       {booking?.code ? (
         <p className="mt-3 font-mono text-sm text-text-tertiary">{booking.code}</p>

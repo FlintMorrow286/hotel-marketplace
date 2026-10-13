@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from app.config.payment import NO_MONEY_MODES
-from app.config.settings import settings
 from app.db.pool import get_pool
 from app.modules.booking.access import require_token
 from app.modules.payment import service
@@ -99,9 +97,3 @@ async def payment_notification(provider: str, request: Request) -> dict:
             headers={"Retry-After": "1"},
         ) from exc
     return {"ok": True}
-
-
-@payments_router.get("/config")
-async def payment_config() -> dict:
-    """What the checkout needs to know about the money: whether anybody is really charged."""
-    return {"test_mode": settings.payment_mode in NO_MONEY_MODES}

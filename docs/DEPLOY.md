@@ -85,6 +85,11 @@ Staff sign in at `/admin/login`. Running it again with the same email fails on t
 | SENTRY_DSN | unset | Error reporting. An error carries its exception, stack trace and request line; local variables, request bodies, the `X-Booking-Token` header, the iCal feed token in the URL and the log lines before it are not sent (`app/utils/sentry.py`). Error-level log lines are sent as events, with their text. |
 | PAYMENT_MODE | stub | `stub` confirms a booking at once; `mock_acquiring` sends the guest to a test payment page and back (see Payments below). Neither charges anyone, and each logs `payment-stub-outside-dev` at every start outside development. `fail` and `delayed_stub` are test-only, `tinkoff` has no implementation: production refuses all three. |
 | ALLOW_PRIVATE_TARGETS | false | Production refuses to start with private targets on, and says so. |
+| MAIL_BACKEND | log | `log` delivers nothing: every letter is kept in the `email_message` table (admin → "Письма") and the booking pages do not promise one. `smtp` delivers through the server below. Production runs on `log` with a startup warning (`email-not-delivered-outside-dev`) until there is an account. |
+| MAIL_FROM, MAIL_REPLY_TO | `Бронирование <no-reply@localhost>`, empty | The sender (`Name <address>`; the address is also the envelope sender and the domain of each `Message-ID`) and where replies go. Empty reply address: the letters say replies are not read. |
+| SMTP_HOST, SMTP_PORT | empty, 587 | The server for `MAIL_BACKEND=smtp`. Startup refuses `smtp` without a host. |
+| SMTP_USER, SMTP_PASSWORD | empty | The account; both or neither. Production refuses an account without `SMTP_STARTTLS` or `SMTP_SSL` (the password would cross the network in clear text). |
+| SMTP_STARTTLS, SMTP_SSL | true, false | STARTTLS upgrades a plain connection (port 587); SSL is TLS from the first byte (port 465). Not both. |
 
 The containers get every key of `.env.example` and nothing else from `.env`; the lines Compose fixes itself (`APP_ENV`, `APP_HOST`, `APP_PORT`, `DATABASE_URL`, `REDIS_URL`, `MEDIA_DIR`, `RUN_BACKGROUND_JOBS`) win over the file. `tests/test_compose_env.py` fails when a key is added to `.env.example` and not to `docker-compose.yml`. A variable left unset keeps the application's default.
 
@@ -351,6 +356,9 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
   this stack; the real error is in the `photo-decode-failed` log line.
 - Real payments: the stub and the mock acquirer (`mock_acquiring`) are the only providers; no real acquirer is
   implemented. `HostedPaymentProvider` (`app/modules/payment/provider.py`) is where one goes.
+- Mail through a real provider: delivery was exercised against an SMTP server on the same host (aiosmtpd, no TLS)
+  and the protocol against a fake one in the test suite. STARTTLS and SSL, a provider's own limits and its answers
+  to spam checks, SPF/DKIM/DMARC for the sender's domain and inbox placement were not.
 
 ## What startup refuses
 
@@ -366,6 +374,35 @@ On a Docker host (2 CPU, Compose v2), with the files as shipped:
 
 `PAYMENT_MODE=stub` and `PAYMENT_MODE=mock_acquiring` are accepted, since no real provider exists yet, and log a
 warning (`payment-stub-outside-dev`) at every start: bookings are confirmed without charging anyone.
+
+## Mail
+
+A booking that is confirmed or cancelled with a refund queues its letters in the same transaction (the partner
+always, the guest for a web booking); the `jobs` process sends them every 5 seconds. Details and the failure rules:
+`docs/ARCHITECTURE.md` §4.10.
+
+- **Until there is an account**, leave `MAIL_BACKEND=log`. Nothing is sent, the text of every letter stays in the
+  admin page "Письма" (`/admin/emails`), and the booking pages say "save the booking code" instead of "we sent you a
+  letter". The app logs `email-not-delivered-outside-dev` at every start outside development.
+- **Connecting a provider:** set `MAIL_BACKEND=smtp`, `SMTP_HOST`, `SMTP_PORT` (587 with `SMTP_STARTTLS=true`, or 465
+  with `SMTP_SSL=true` and `SMTP_STARTTLS=false`), `SMTP_USER`, `SMTP_PASSWORD` and `MAIL_FROM` with an address on a
+  domain you control. Publish SPF and DKIM for that domain at the provider's instructions, or the letters land in spam.
+  A wrong setting stops the containers at boot with the reason; a wrong account does not (see `email-smtp-auth-failed`).
+  A letter the `log` backend already marked as sent is not sent again: only letters still waiting go through the
+  new account.
+- **Trying it locally without a provider**, with a catcher such as Mailpit: `MAIL_BACKEND=smtp SMTP_HOST=localhost
+  SMTP_PORT=1025 SMTP_STARTTLS=false`; the catcher's page shows what a guest would read.
+- **What to watch:** admin → "Письма" lists every letter with its state, and "Повторить" puts a failed one back. Log
+  lines that need a person: `email-failed-permanently` (a letter that will not go: address refused, attempts
+  exhausted; the log line has no addresses, the row in "Письма" has the refused one), `email-smtp-auth-failed` (the account is wrong: the whole queue waits), `email-enqueue-failed` (a
+  booking without its letters: the queue did not take the row; the booking itself is fine), `mail-loop-error`.
+- **A confirmation that was still waiting for a retry when the booking was cancelled is not sent** (state
+  "Пропущено"): the cancellation letter is the news by then.
+- **A letter is delivered at least once.** If a process dies after the server accepted a letter and before the queue
+  noted it, the letter is sent again under the same `Message-ID`.
+- **Personal data:** a letter row holds the recipient's address, and the log backend also the text. Sent rows are
+  deleted after 30 days (`MAIL_SENT_RETENTION_DAYS`), failed ones after 180 (`MAIL_FAILED_RETENTION_DAYS`) by the
+  `jobs` process. After a real delivery the text is not kept.
 
 ## Payments
 

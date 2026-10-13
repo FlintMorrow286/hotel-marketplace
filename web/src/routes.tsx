@@ -18,6 +18,7 @@ import { AdminLayout } from "@/pages/admin/AdminLayout";
 import { AdminLoginPage } from "@/pages/admin/AdminLoginPage";
 import { AdminReportsPage } from "@/pages/admin/AdminReportsPage";
 import { AdminModerationPage } from "@/pages/admin/AdminModerationPage";
+import { AdminEmailPage } from "@/pages/admin/AdminEmailPage";
 import { AdminOutboxPage } from "@/pages/admin/AdminOutboxPage";
 import { AdminReconciliationPage } from "@/pages/admin/AdminReconciliationPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
@@ -66,6 +67,7 @@ export const routes: RouteObject[] = [
           { index: true, element: <AdminReportsPage /> },
           { path: "moderation", element: <AdminModerationPage /> },
           { path: "outbox", element: <AdminOutboxPage /> },
+          { path: "emails", element: <AdminEmailPage /> },
           { path: "reconciliation", element: <AdminReconciliationPage /> },
         ],
       },

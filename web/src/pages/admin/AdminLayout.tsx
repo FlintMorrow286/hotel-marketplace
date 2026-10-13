@@ -43,6 +43,12 @@ export function AdminLayout() {
               События
             </Link>
             <Link
+              to="/admin/emails"
+              className="inline-flex min-h-10 items-center rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
+            >
+              Письма
+            </Link>
+            <Link
               to="/admin/reconciliation"
               className="inline-flex min-h-10 items-center rounded-button px-3 py-2 text-text-secondary transition-colors duration-micro hover:bg-interactive-hover hover:text-text-primary focus-visible:shadow-focus-ring"
             >

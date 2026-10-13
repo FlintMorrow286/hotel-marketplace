@@ -87,6 +87,7 @@ _CLEANUP = (
     "DELETE FROM ical_subscription; "
     "DELETE FROM booking_line; "
     "DELETE FROM payment; "
+    "DELETE FROM email_message; "
     "DELETE FROM mock_acquirer_payment; "
     "DELETE FROM booking; "
     "DELETE FROM inventory_day; "

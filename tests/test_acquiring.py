@@ -943,4 +943,4 @@ def test_the_checkout_learns_whether_money_moves(monkeypatch) -> None:
     client = TestClient(create_app())  # no lifespan: the answer needs no database
     for mode, test_mode in [("stub", True), ("mock_acquiring", True), ("tinkoff", False)]:
         monkeypatch.setattr(settings, "payment_mode", mode)
-        assert client.get("/v1/payments/config").json() == {"test_mode": test_mode}
+        assert client.get("/v1/config").json()["payment_test_mode"] is test_mode

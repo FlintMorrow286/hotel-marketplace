@@ -7,6 +7,7 @@ first login or the first payment.
 from __future__ import annotations
 
 import ipaddress
+from email.utils import parseaddr
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
@@ -28,6 +29,8 @@ IMPLEMENTED_PAYMENT_MODES = {
 }
 # Modes that exist to exercise the code: delayed_stub waits, fail always fails.
 TEST_ONLY_PAYMENT_MODES = {PaymentMode.DELAYED_STUB, PaymentMode.FAIL}
+
+MAIL_BACKENDS = {"log", "smtp"}
 
 _LOCAL_SUFFIXES = ("localhost", "local", "internal")
 
@@ -81,6 +84,21 @@ def production_problems(s: Settings) -> list[str]:
             f"use one of {sorted(m.value for m in IMPLEMENTED_PAYMENT_MODES)}"
         )
 
+    if s.mail_backend not in MAIL_BACKENDS:
+        problems.append(f"MAIL_BACKEND={s.mail_backend!r} is not one of {sorted(MAIL_BACKENDS)}")
+    elif s.mail_backend == "smtp":
+        if not s.smtp_host.strip():
+            problems.append("SMTP_HOST must be set when MAIL_BACKEND=smtp")
+        if "@" not in parseaddr(s.mail_from)[1]:
+            problems.append("MAIL_FROM must hold an address, as in: Name <no-reply@example.com>")
+        if s.smtp_starttls and s.smtp_ssl:
+            problems.append(
+                "SMTP_STARTTLS and SMTP_SSL exclude each other: STARTTLS upgrades a plain "
+                "connection (587), SSL is TLS from the first byte (465)"
+            )
+        if bool(s.smtp_user) != bool(s.smtp_password):
+            problems.append("SMTP_USER and SMTP_PASSWORD go together")
+
     if s.is_dev:
         return problems
 
@@ -112,6 +130,11 @@ def production_problems(s: Settings) -> list[str]:
         )
     if s.payment_mode in TEST_ONLY_PAYMENT_MODES:
         problems.append(f"PAYMENT_MODE={s.payment_mode!r} is for tests only {where}")
+    if s.mail_backend == "smtp" and s.smtp_user and not (s.smtp_starttls or s.smtp_ssl):
+        problems.append(
+            f"SMTP_USER is set but neither SMTP_STARTTLS nor SMTP_SSL is: the password would "
+            f"cross the network in clear text {where}"
+        )
 
     return problems
 

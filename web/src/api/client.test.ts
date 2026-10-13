@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiException, bookings, legal, payments } from "./client";
+import { admin, ApiException, bookings, legal, site } from "./client";
 
 class MemoryStorage {
   private data = new Map<string, string>();
@@ -109,14 +109,30 @@ describe("the booking access token", () => {
     await expect(bookings.syncPayment("b1")).resolves.toEqual(answer);
   });
 
-  it("asks whether the payment is a test one without a token", async () => {
-    fetchMock.mockResolvedValueOnce(reply({ test_mode: true }));
+  it("asks what the pages may promise, without a token", async () => {
+    const answer = { payment_test_mode: true, email_enabled: false };
+    fetchMock.mockResolvedValueOnce(reply(answer));
 
-    await expect(payments.config()).resolves.toEqual({ test_mode: true });
+    await expect(site.config()).resolves.toEqual(answer);
 
     const { url, headers } = lastRequest();
-    expect(url).toBe("/v1/payments/config");
+    expect(url).toBe("/v1/config");
     expect(headers?.["X-Booking-Token"]).toBeUndefined();
+  });
+
+  it("reads the mail queue by status and puts a failed letter back", async () => {
+    fetchMock.mockResolvedValueOnce(reply({ backend: "log", counts: {}, items: [] }));
+    await admin.emails("failed");
+    expect(lastRequest().url).toBe("/v1/admin/emails?status=failed");
+
+    fetchMock.mockResolvedValueOnce(reply({ backend: "log", counts: {}, items: [] }));
+    await admin.emails(null);
+    expect(lastRequest().url).toBe("/v1/admin/emails");
+
+    fetchMock.mockResolvedValueOnce(reply({ retried: "e1", kind: "guest_booking_confirmed" }));
+    await admin.retryEmail("e1");
+    expect(lastRequest().url).toBe("/v1/admin/emails/e1/retry");
+    expect(lastRequest().init.method).toBe("POST");
   });
 
   it("reads the current documents version from /v1/legal", async () => {

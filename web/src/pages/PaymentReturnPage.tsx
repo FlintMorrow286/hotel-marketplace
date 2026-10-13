@@ -6,6 +6,7 @@ import { bookings } from "@/api/client";
 import type { BookingOut } from "@/api/types";
 import { Button } from "@/components/ui/Button";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { usePublicConfig } from "@/hooks/usePublicConfig";
 import { keepAsking, returnView, type ReturnView } from "@/utils/payment";
 
 const POLL_MS = 3_000;
@@ -26,6 +27,7 @@ export function PaymentReturnPage() {
   const queryClient = useQueryClient();
   const [attempt, setAttempt] = useState(0);
   const [waitedLong, setWaitedLong] = useState(false);
+  const emailEnabled = usePublicConfig().data?.email_enabled === true;
 
   useEffect(() => {
     setWaitedLong(false);
@@ -79,6 +81,7 @@ export function PaymentReturnPage() {
         waitedLong={waitedLong}
         code={booking.data?.code}
         bookingId={bookingId}
+        emailEnabled={emailEnabled}
         onCheckAgain={checkAgain}
       />
     </div>
@@ -90,12 +93,14 @@ function Outcome({
   waitedLong,
   code,
   bookingId,
+  emailEnabled,
   onCheckAgain,
 }: {
   view: ReturnView;
   waitedLong: boolean;
   code: string | undefined;
   bookingId: string;
+  emailEnabled: boolean;
   onCheckAgain: () => void;
 }) {
   const search = (
@@ -152,8 +157,8 @@ function Outcome({
     case "waiting":
       return waitedLong ? (
         <Heading text="Банк ещё обрабатывает платёж">
-          Если деньги списаны, бронь подтвердится сама и письмо придёт на почту. Статус можно
-          посмотреть по коду на странице «Моя бронь».
+          Если деньги списаны, бронь подтвердится сама{emailEnabled ? " и письмо придёт на почту" : ""}.
+          Статус можно посмотреть по коду на странице «Моя бронь».
           <br />
           <span className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Button onClick={onCheckAgain}>Проверить ещё раз</Button>

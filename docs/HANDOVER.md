@@ -54,7 +54,10 @@ Double booking невозможен по архитектуре.
 - Оплата при `PAYMENT_MODE=mock_acquiring`: чекаут уводит на страницу оплаты
   «банка», `/checkout/:id/return` спрашивает результат и ведёт на успех, отказ
   или «Проверить ещё раз». Строка «Тестовая оплата» — только если API говорит
-  `test_mode` (`GET /v1/payments/config`)
+  `payment_test_mode` (`GET /v1/config`)
+- Письма: страницы подтверждения, «Моя бронь» и возврата с оплаты обещают письмо только
+  при `email_enabled` (`MAIL_BACKEND=smtp`), иначе просят сохранить код брони; в админке
+  страница «Письма» (очередь, текст писем log-бэкенда, «Повторить»)
 - Тёмная тема следует `prefers-color-scheme`
 - Каталог и шахматка берут реальные данные из API (rate plan + сезонные цены
   показываются в шахматке корректно)
@@ -64,9 +67,9 @@ Double booking невозможен по архитектуре.
 ```bash
 cd /Users/guuu/Desktop/hotel-marketplace
 uv sync --extra bot                           # бэкенд + aiogram (Telegram-бот)
-uv run python -m app.db.migrate               # миграции (1..27)
+uv run python -m app.db.migrate               # миграции (1..28)
 uv run uvicorn app.main:app --port 8002       # API + собранный фронт на :8002
-uv run pytest tests/ -q                       # 717 тестов
+uv run pytest tests/ -q                       # 796 тестов
 uv run ruff check app tests && uv run ruff format app tests
 
 cd web && npm run build                       # пересобрать фронт после правок
@@ -88,7 +91,9 @@ public: properties (GET list/detail), availability
 booking: hold (header Idempotency-Key; в теле consent — оферта, ПД, версия
 документов), GET/{id}, cancel, pay (эквайринг: 202 + payment_url), payment/sync, refund
 legal: GET /legal → {docs_version}
-payments: POST /payments/notifications/{provider} (подпись провайдера), GET /payments/config
+payments: POST /payments/notifications/{provider} (подпись провайдера)
+site: GET /config → {payment_test_mode, email_enabled}
+admin: emails (GET очередь писем, POST {id}/retry)
 admin: reports/commission
 healthz, readyz
 
@@ -96,9 +101,9 @@ healthz, readyz
 
 ```
 hotel-marketplace/
-├── migrations/0001..0027*.sql
-├── app/modules/{auth,property,inventory,booking,payment,rate,admin,notification,legal}/
-├── app/{jobs/{reaper,payments}.py, db/{pool,migrate}.py, config/{settings,legal,payment}.py}
+├── migrations/0001..0028*.sql
+├── app/modules/{auth,property,inventory,booking,payment,rate,admin,notification,legal,site}/
+├── app/{jobs/{reaper,payments,mail}.py, db/{pool,migrate}.py, config/{settings,legal,payment}.py}
 ├── web/src/{pages/{guest,partner}, components/ui, api/}
 ├── tests/   (pytest + pytest-asyncio)
 └── docs/{ARCHITECTURE.md, LEGAL.md, HANDOVER.md}
@@ -157,6 +162,10 @@ hotel-marketplace/
   уведомление, возврат гостя; ключей не нужно, `docs/ARCHITECTURE.md` §4.9).
   Настоящий эквайринг = реализация `HostedPaymentProvider`; чек 54-ФЗ не сделан.
   Брони каналов эквайринг не видят (их деньги собрала OTA)
+- Письма: строка в `email_message` пишется в транзакции подтверждения/возврата, отправляет
+  джоб `mail` (`docs/ARCHITECTURE.md` §4.10). Пока нет SMTP — `MAIL_BACKEND=log`: ничего не
+  уходит, текст писем виден в админке. Письма гостю — только по веб-броням, партнёру — по всем.
+  Токен брони в письмо не попадает никогда
 - Для эквайринга `APP_BASE_URL` — адрес, на котором гость открыл сайт (оттуда
   строятся страница оплаты и адрес возврата, токен брони живёт в sessionStorage
   вкладки). e2e и CI гоняются на `mock_acquiring`
